@@ -1,0 +1,24 @@
+# NEVER commit credentials. The VPS needs ~/.claude/.credentials.json, but copy it
+# out-of-band (scp), never through this repo.
+.credentials.json
+*.credentials.json
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local-only worker settings
+remote-settings.json
+
+# Runtime artifacts
+platform.db
+*.log
+nohup.out
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
