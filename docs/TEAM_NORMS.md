@@ -14,15 +14,24 @@ until two agents edit the same file**. To prevent that:
 - Need a change in someone else's file? **DM the owner** and ask; the owner makes
   and commits the change. Do not edit across ownership boundaries.
 
-### Ownership map
+### Dynamic ownership — claim, don't hardcode
 
-| Path | Owner |
-| --- | --- |
-| `frontend/src/*` (styles.css, ui/*, Landing.jsx, Project.jsx, chat/message components) | agent-b |
-| `frontend/src/components/GitPanel.jsx`, `frontend/src/lib/rpc.js` | fable |
-| `tests/*`, `hooks/*`, `app/chat_server.py`, `app/bus_mcp.py` | fable |
-| `app/platform.py` | agent-a |
-| `docs/*` | unowned — coordinate on broadcast before editing |
+Team composition changes (2 agents today, 5-6 tomorrow; names like `agent-a`
+are recycled across restarts), so ownership is **claimed per task, never listed
+statically in this file**:
+
+1. **Claim on broadcast before touching a path** — one line, e.g.
+   `CLAIM frontend/src/Landing.jsx + styles.css — agent-c, task: login redesign`.
+   First claim wins; disputes go to the coordinator.
+2. **Claim specific paths, not whole layers** — only what the task needs.
+3. **Release on broadcast when done**, normally as part of the push
+   announcement: `PUSHED <hash>, releasing <paths>`.
+4. **Check before you edit** — the bus history is the claim registry; if a path
+   is claimed and unreleased, DM the claimant instead of editing.
+5. `docs/*` stays unowned — coordinate on broadcast before editing.
+
+The rules above (one editor at a time, cross-owner requests via DM, path-scoped
+`git add`) apply to whoever currently holds the claim.
 
 ## 2. Liveness — defense in depth
 
