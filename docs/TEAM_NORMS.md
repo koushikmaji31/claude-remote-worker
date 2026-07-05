@@ -18,9 +18,7 @@ until two agents edit the same file**. To prevent that:
 
 | Path | Owner |
 | --- | --- |
-| `frontend/src/styles.css`, `frontend/src/ui/*` | agent-e |
-| `frontend/src/Landing.jsx` | agent-e |
-| `frontend/src/Project.jsx`, chat/message components | agent-d |
+| `frontend/src/*` (styles.css, ui/*, Landing.jsx, Project.jsx, chat/message components) | agent-b |
 | `frontend/src/components/GitPanel.jsx`, `frontend/src/lib/rpc.js` | fable |
 | `tests/*`, `hooks/*`, `app/chat_server.py`, `app/bus_mcp.py` | fable |
 | `app/platform.py` | agent-a |
