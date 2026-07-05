@@ -1,4 +1,5 @@
 """Team Collab Platform backend — see docs/API_CONTRACT.md (v1)."""
+import os
 import secrets
 import sqlite3
 import subprocess
@@ -15,7 +16,8 @@ DB_PATH = Path(__file__).resolve().parent.parent / "platform.db"
 app = FastAPI(title="Team Collab Platform")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173"]
+    + ([os.environ["PUBLIC_BASE_URL"].rstrip("/")] if os.environ.get("PUBLIC_BASE_URL") else []),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -96,7 +98,8 @@ def require_member(conn, pid: int, user_id: int) -> sqlite3.Row:
 
 
 def invite_link(code: str) -> str:
-    return f"http://127.0.0.1:8900/?join={code}"
+    base = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8900").rstrip("/")
+    return f"{base}/?join={code}"
 
 
 # ---------- Auth ----------
