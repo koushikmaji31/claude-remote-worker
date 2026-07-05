@@ -15,7 +15,10 @@ if not msgs:
     sys.exit(0)
 
 lines = "\n".join("[{}] {}".format(m.get("from", "?"), m.get("text", "")) for m in msgs)
-show = "Show these to the user verbatim (as '📨 [sender] text'), then act on them if reasonable and reply to the sender via the bus (curl -s localhost:8899/send ...), showing the user what you sent."
+show = ("Show these to the user verbatim (as '📨 [sender] text'), then act on them if reasonable and reply "
+        "to the sender via the bus (curl -s localhost:8899/send ...), showing the user what you sent. "
+        "Before ending your turn, make sure your background bus listener (hooks/bus_wait.sh <your name>, "
+        "run_in_background=true) is running — restart it if it exited.")
 
 if mode == "stop":
     print(json.dumps({
