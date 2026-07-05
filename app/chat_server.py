@@ -118,17 +118,23 @@ def register(name: str):
     return {"ok": True, "name": name}
 
 
+STALE_AFTER = 120  # seconds without a poll before an agent is flagged deaf
+
+
 @app.get("/who")
 def who():
+    now = time.time()
     with _lock, _conn() as c:
-        rows = c.execute("SELECT name, cursor FROM clients ORDER BY name").fetchall()
-        pend = {}
+        rows = c.execute("SELECT name, cursor, last_seen FROM clients ORDER BY name").fetchall()
+        pend, presence = {}, {}
         for r in rows:
             n = c.execute(
                 "SELECT COUNT(*) n FROM messages WHERE id>? AND (recipient=? OR (recipient IS NULL AND sender!=?))",
                 (r["cursor"], r["name"], r["name"])).fetchone()["n"]
             pend[r["name"]] = n
-        return {"clients": [r["name"] for r in rows], "pending": pend}
+            age = int(now - r["last_seen"])
+            presence[r["name"]] = {"last_seen_secs_ago": age, "stale": age > STALE_AFTER}
+        return {"clients": [r["name"] for r in rows], "pending": pend, "presence": presence}
 
 
 @app.get("/history")
