@@ -118,7 +118,8 @@ def register(name: str):
     return {"ok": True, "name": name}
 
 
-STALE_AFTER = 90  # seconds without a poll before an agent is flagged deaf (team norm)
+STALE_AFTER = 90     # seconds without a poll before an agent is flagged deaf (team norm)
+PRUNE_AFTER = 1800   # seconds of silence before assuming the session is closed and unregistering it
 
 
 def _stale_watch():
@@ -133,6 +134,10 @@ def _stale_watch():
                 rows = c.execute("SELECT name, last_seen FROM clients").fetchall()
                 for r in rows:
                     age = now - r["last_seen"]
+                    if age > PRUNE_AFTER:
+                        c.execute("DELETE FROM clients WHERE name=?", (r["name"],))
+                        alerted.discard(r["name"])
+                        continue
                     if age > STALE_AFTER and r["name"] not in alerted:
                         alerted.add(r["name"])
                         c.execute(
