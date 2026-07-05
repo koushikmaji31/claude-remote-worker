@@ -118,7 +118,36 @@ def register(name: str):
     return {"ok": True, "name": name}
 
 
-STALE_AFTER = 120  # seconds without a poll before an agent is flagged deaf
+STALE_AFTER = 90  # seconds without a poll before an agent is flagged deaf (team norm)
+
+
+def _stale_watch():
+    """Broadcast when an agent goes deaf (no poll in STALE_AFTER seconds).
+    One alert per deaf episode; recovery clears it."""
+    alerted = set()
+    while True:
+        time.sleep(30)
+        try:
+            now = time.time()
+            with _lock, _conn() as c:
+                rows = c.execute("SELECT name, last_seen FROM clients").fetchall()
+                for r in rows:
+                    age = now - r["last_seen"]
+                    if age > STALE_AFTER and r["name"] not in alerted:
+                        alerted.add(r["name"])
+                        c.execute(
+                            "INSERT INTO messages(sender, recipient, text, ts) VALUES(?,?,?,?)",
+                            ("bus-server", None,
+                             f"PRESENCE ALERT: [{r['name']}] appears deaf — no bus poll for {int(age)}s. "
+                             f"Its queued messages will wait; someone with terminal access may need to nudge it.",
+                             now))
+                    elif age <= STALE_AFTER:
+                        alerted.discard(r["name"])
+        except Exception:
+            pass
+
+
+threading.Thread(target=_stale_watch, daemon=True).start()
 
 
 @app.get("/who")
