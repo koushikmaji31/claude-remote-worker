@@ -6,6 +6,7 @@ Plain line = broadcast, "@name message" = direct message. Ctrl-C to quit.
 """
 
 import json
+import os
 import sys
 import threading
 import time
@@ -13,7 +14,22 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SERVER = "http://127.0.0.1:8899"
+
+def _read_file(path):
+    try:
+        with open(path) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+SERVER = (
+    os.environ.get("CLAUDE_BUS_URL")
+    or _read_file("/tmp/claude-bus/url")
+    or "http://127.0.0.1:8899"
+).rstrip("/")
+TOKEN = os.environ.get("CLAUDE_BUS_TOKEN") or _read_file("/tmp/claude-bus/token")
+AUTH_HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
 stop = threading.Event()
 
 
@@ -21,7 +37,8 @@ def recv_loop(name):
     url = f"{SERVER}/recv?name={urllib.parse.quote(name)}&timeout=25"
     while not stop.is_set():
         try:
-            with urllib.request.urlopen(url, timeout=30) as resp:
+            req = urllib.request.Request(url, headers=AUTH_HEADERS)
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode())
             for msg in data.get("messages", []):
                 ts = time.strftime("%H:%M:%S", time.localtime(msg.get("ts", time.time())))
@@ -38,7 +55,7 @@ def send(name, to, text):
     payload = json.dumps({"sender": name, "to": to, "text": text}).encode()
     req = urllib.request.Request(
         f"{SERVER}/send", data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **AUTH_HEADERS},
     )
     try:
         urllib.request.urlopen(req, timeout=10).read()

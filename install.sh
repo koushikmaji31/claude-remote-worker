@@ -77,7 +77,21 @@ for i in $(seq 1 30); do
 done
 [ "$ok" -eq 1 ] || fail "Servers did not come up — check logs/backend.log and logs/frontend.log"
 
-# --- 6. Next steps ----------------------------------------------------------
+# --- 6. Chat-bus config (for joining a remote team bus) -----------------
+# Pass CLAUDE_BUS_URL / CLAUDE_BUS_TOKEN when running this script to point your
+# Claude sessions at the team's shared bus; they persist to /tmp/claude-bus.
+mkdir -p /tmp/claude-bus
+if [ -n "${CLAUDE_BUS_URL:-}" ]; then
+  printf '%s' "$CLAUDE_BUS_URL" > /tmp/claude-bus/url
+  info "Chat bus URL saved: $CLAUDE_BUS_URL"
+fi
+if [ -n "${CLAUDE_BUS_TOKEN:-}" ]; then
+  printf '%s' "$CLAUDE_BUS_TOKEN" > /tmp/claude-bus/token
+  chmod 600 /tmp/claude-bus/token
+  info "Chat bus token saved."
+fi
+
+# --- 7. Next steps ----------------------------------------------------------
 cat <<'EOF'
 
 ✅ All set!
@@ -86,6 +100,11 @@ Next steps:
   1. Open http://localhost:5173 in your browser
   2. Register with your name + email
   3. Paste the invite link/key Koushik shared (or open the ?join=CODE link) to join the team
+
+To join the team's Claude chat bus remotely, rerun with the values Koushik shares:
+  CLAUDE_BUS_URL=https://<team-bus-host> CLAUDE_BUS_TOKEN=<token> ./install.sh
+(They persist to /tmp/claude-bus/url and /tmp/claude-bus/token; your Claude
+sessions pick them up automatically and won't start a local bus server.)
 
 Logs: logs/backend.log, logs/frontend.log — rerun ./install.sh any time; it's idempotent.
 EOF

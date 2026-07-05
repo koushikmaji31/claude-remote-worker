@@ -10,8 +10,9 @@ namefile=/tmp/claude-bus/names/$sid
 [ -s "$namefile" ] || exit 0
 [ -f /tmp/claude-bus/off ] && exit 0
 name=$(cat "$namefile")
+. "$(dirname "$0")/bus_env.sh"
 
-out=$(curl -s -m 10 "localhost:8899/recv?name=$name&timeout=3")
+out=$(curl -s -m 10 "${BUS_AUTH[@]}" "$BUS_URL/recv?name=$name&timeout=3")
 [ -z "$out" ] && exit 0
 printf '%s' "$out" | python3 "$(dirname "$0")/bus_format.py" stop
 exit 0
