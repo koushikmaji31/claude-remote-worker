@@ -17,15 +17,43 @@ API:
     GET  /health
 """
 
+import os
 import time
+import secrets
 import threading
 from collections import defaultdict
 from typing import Optional, List, Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="Claude-to-Claude Chat Server")
+
+# Remote callers (e.g. a friend's Claudes over ngrok) must present this token.
+# Localhost callers are trusted without it. Token persisted so restarts keep it.
+_TOKEN_FILE = "/tmp/claude-bus/token"
+os.makedirs("/tmp/claude-bus", exist_ok=True)
+if os.environ.get("BUS_TOKEN"):
+    BUS_TOKEN = os.environ["BUS_TOKEN"]
+elif os.path.exists(_TOKEN_FILE):
+    BUS_TOKEN = open(_TOKEN_FILE).read().strip()
+else:
+    BUS_TOKEN = secrets.token_hex(16)
+with open(_TOKEN_FILE, "w") as f:
+    f.write(BUS_TOKEN)
+
+
+@app.middleware("http")
+async def _auth_remote(request: Request, call_next):
+    client = request.client.host if request.client else ""
+    # ngrok delivers from localhost but sets X-Forwarded-For — treat those as remote
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded or client not in ("127.0.0.1", "::1", "localhost"):
+        auth = request.headers.get("authorization", "")
+        if auth != f"Bearer {BUS_TOKEN}":
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "bus token required"}, status_code=401)
+    return await call_next(request)
 
 _lock = threading.Lock()
 _queues: Dict[str, List[dict]] = defaultdict(list)   # name -> pending messages
