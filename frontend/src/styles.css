@@ -237,6 +237,32 @@ a:hover { text-decoration: underline; }
 code { background: var(--surface-2); padding: 2px 6px; border-radius: var(--r-sm); font-family: var(--mono); font-size: 12px; }
 hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 
+/* ---------- Chat / ChatPanel (component owner: agent-d, styles owner: agent-e) ---------- */
+.msglog {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  max-height: 360px; overflow-y: auto;
+  padding: var(--sp-2);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.msg { display: flex; gap: var(--sp-3); align-items: flex-start; max-width: 88%; }
+.msg .meta { display: flex; flex-direction: column; line-height: 1.2; }
+.msg .sender { font-weight: 600; font-size: 13px; color: var(--text); }
+.msg .ts { color: var(--text-faint); font-size: 11px; }
+.msg .body {
+  font-size: 14px; white-space: pre-wrap; word-break: break-word;
+  color: var(--text); margin-top: 2px;
+}
+/* Own messages: right-aligned bubble */
+.msg.me { align-self: flex-end; flex-direction: row-reverse; }
+.msg.me .meta { align-items: flex-end; }
+.msg.me .body {
+  background: var(--brand-soft); color: var(--text);
+  padding: 8px 12px; border-radius: var(--r-md);
+}
+.composer { display: flex; gap: var(--sp-2); align-items: flex-end; margin-top: var(--sp-3); }
+.composer textarea { flex: 1; min-height: 44px; }
+
 /* ---------- Inline text states (legacy-compat: .error / .ok) ---------- */
 .error { color: var(--danger); font-size: 14px; }
 .ok { color: var(--success); font-size: 14px; }
