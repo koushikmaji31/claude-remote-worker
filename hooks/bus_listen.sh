@@ -13,6 +13,18 @@ name=$(cat "$namefile")
 . "$(dirname "$0")/bus_env.sh"
 
 out=$(curl -s -m 10 "${BUS_AUTH[@]}" "$BUS_URL/recv?name=$name&timeout=3")
-[ -z "$out" ] && exit 0
-printf '%s' "$out" | python3 "$(dirname "$0")/bus_format.py" stop
+if [ -n "$out" ]; then
+  result=$(printf '%s' "$out" | python3 "$(dirname "$0")/bus_format.py" stop)
+  if [ -n "$result" ]; then
+    printf '%s\n' "$result"
+    exit 0
+  fi
+fi
+
+# Safety net: never go idle without the background listener running, or bus
+# messages will queue with nothing to wake this session.
+if ! pgrep -f "bus_wait.sh $name" >/dev/null 2>&1; then
+  HOOKS_DIR=$(cd "$(dirname "$0")" && pwd)
+  printf '{"decision":"block","reason":"Your bus listener is not running, so incoming bus messages cannot wake you. Start it NOW with the Bash tool (run_in_background=true): bash %s/bus_wait.sh %s — then end your turn."}\n' "$HOOKS_DIR" "$name"
+fi
 exit 0
