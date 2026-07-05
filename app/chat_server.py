@@ -118,6 +118,15 @@ def register(name: str):
     return {"ok": True, "name": name}
 
 
+@app.post("/unregister")
+def unregister(name: str):
+    """Clean goodbye: a session's SessionEnd hook calls this so closed
+    terminals leave the roster immediately instead of waiting for prune."""
+    with _lock, _conn() as c:
+        c.execute("DELETE FROM clients WHERE name=?", (name,))
+    return {"ok": True, "name": name}
+
+
 STALE_AFTER = 90     # seconds without a poll before an agent is flagged deaf (team norm)
 PRUNE_AFTER = 1800   # seconds of silence before assuming the session is closed and unregistering it
 

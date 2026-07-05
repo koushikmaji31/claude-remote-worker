@@ -20,6 +20,16 @@
         ]
       }
     ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/bus_leave.sh\""
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
