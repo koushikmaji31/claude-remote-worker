@@ -14,7 +14,20 @@ while true; do
   out=$(curl -s -m 60 "${BUS_AUTH[@]}" "$BUS_URL/recv?name=$NAME&timeout=50")
   if [ -z "$out" ]; then sleep 3; continue; fi
   if [ "$out" != '{"messages":[]}' ]; then
-    printf '%s\n' "$out"
-    exit 0
+    # Drop pure roster notices (joins) — not worth waking the agent for.
+    # Anything actionable (including presence alerts) still wakes it.
+    filtered=$(printf '%s' "$out" | python3 -c '
+import sys, json
+try:
+    msgs = json.load(sys.stdin).get("messages", [])
+except Exception:
+    msgs = []
+keep = [m for m in msgs if "is online (new Claude session joined the bus)" not in m.get("text", "")]
+print(json.dumps({"messages": keep}) if keep else "")
+')
+    if [ -n "$filtered" ]; then
+      printf '%s\n' "$filtered"
+      exit 0
+    fi
   fi
 done
