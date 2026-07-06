@@ -12,8 +12,8 @@
   --brand-700: #e2350c;
   --brand-soft: rgba(255, 64, 23, 0.10);
 
-  /* Neutral surfaces (light, default — warm agno grey) */
-  --bg: #f2f1ec;
+  /* Neutral surfaces (light, default — warm agno off-white) */
+  --bg: #f7f6f2;
   --bg-elevated: #ffffff;
   --surface: #ffffff;
   --surface-2: #ecebe5;
@@ -89,7 +89,7 @@
 
 /* Explicit light override (theme toggle) — same as :root default */
 :root[data-theme='light'] {
-  --bg: #f2f1ec;
+  --bg: #f7f6f2;
   --bg-elevated: #ffffff;
   --surface: #ffffff;
   --surface-2: #ecebe5;
