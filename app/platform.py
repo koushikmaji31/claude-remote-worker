@@ -5,7 +5,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -336,7 +336,7 @@ def transfer_admin(pid: int, body: TransferIn, user=Depends(current_user)):
 
 class MessageIn(BaseModel):
     text: str = ""
-    image: str | None = None  # optional data URL ("data:image/...;base64,...")
+    image: Optional[str] = None  # optional data URL ("data:image/...;base64,...")
 
 
 @app.post("/api/projects/{pid}/messages")
