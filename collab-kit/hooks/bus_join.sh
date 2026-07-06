@@ -1,0 +1,46 @@
+#!/bin/bash
+# SessionStart hook: auto-join this Claude session to the chat bus.
+# Bus location/token come from hooks/bus_env.sh (env or /tmp/claude-bus files).
+# Starts a local bus server only when the bus URL is local.
+
+input=$(cat)
+sid=$(printf '%s' "$input" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("session_id",""))' 2>/dev/null)
+mkdir -p /tmp/claude-bus/names
+[ -f /tmp/claude-bus/off ] && exit 0
+. "$(dirname "$0")/bus_env.sh"
+
+# Start the bus server if it's down — but only for a local bus; never
+# auto-start anything when pointed at a remote bus.
+if ! curl -s -m 2 "${BUS_AUTH[@]}" "$BUS_URL/health" >/dev/null 2>&1; then
+  bus_is_local || exit 0
+  (cd /Users/koushikmaji31/Downloads/claude-remote-worker && nohup python3 -m uvicorn app.chat_server:app --host 127.0.0.1 --port 8899 >/tmp/claude-bus/server.log 2>&1 &)
+  for i in $(seq 1 20); do curl -s -m 1 "$BUS_URL/health" >/dev/null 2>&1 && break; sleep 0.5; done
+fi
+
+namefile=/tmp/claude-bus/names/$sid
+if [ -n "$CLAUDE_BUS_NAME" ]; then
+  name=$CLAUDE_BUS_NAME
+elif [ -s "$namefile" ]; then
+  name=$(cat "$namefile")
+else
+  taken=$(curl -s -m 3 "${BUS_AUTH[@]}" "$BUS_URL/who")
+  name=agent-f
+  for c in agent-a agent-b agent-c agent-d agent-e; do
+    case "$taken" in *"\"$c\""*) ;; *) name=$c; break ;; esac
+  done
+fi
+printf '%s' "$name" > "$namefile"
+# Register on the bus so broadcasts reach us (does NOT consume queued messages)
+curl -s -m 3 "${BUS_AUTH[@]}" -X POST "$BUS_URL/register?name=$name" >/dev/null 2>&1
+# Announce ourselves so every other session learns our name automatically
+curl -s -m 3 "${BUS_AUTH[@]}" "$BUS_URL/send" -H 'Content-Type: application/json' \
+  -d "{\"sender\":\"$name\",\"to\":null,\"text\":\"[$name] is online (new Claude session joined the bus).\"}" >/dev/null 2>&1
+online=$(curl -s -m 3 "${BUS_AUTH[@]}" "$BUS_URL/who" | python3 -c 'import sys,json;print(", ".join(json.load(sys.stdin).get("clients",[])))' 2>/dev/null)
+
+auth_hint=""
+[ -n "$BUS_TOKEN" ] && auth_hint=" -H 'Authorization: Bearer $BUS_TOKEN'"
+HOOKS_DIR=$(cd "$(dirname "$0")" && pwd)
+
+cat <<EOF
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"You are '$name' on the Claude chat bus at $BUS_URL (already registered and announced; online: $online). LISTENER: on your first turn and before ending every turn, ensure this is running via the Bash tool with run_in_background=true and description 'bus': bash $HOOKS_DIR/bus_wait.sh $name — when it completes, its output is new bus messages: show them as 'BUS <- [sender]: text', handle them, restart the listener. MESSAGING: use the MCP bus tools (bus_send with sender=$name / bus_check / bus_who; curl $BUS_URL/send$auth_hint as fallback); show sends as 'BUS -> [name]: text'; plain text, no emojis. TEAM NORMS DIGEST (do NOT read docs or bus history at startup — this digest is enough until a task needs more): claim paths on broadcast before editing (CLAIM <paths> — $name, task: ...), first claim wins, release in your push announcement; broadcast = one-line milestones/claims/pushes with commit hash, DM = per-file asks; git add only your claimed paths, commit-or-stash before rebase; announce before restarting shared infra. STARTUP DISCIPLINE: keep your first turn MINIMAL — start the listener, tell the user your bus name and that you are ready, handle only ACTIONABLE queued messages. Never reply to or comment on <agent> is online announcements or presence alerts; no greeting chatter, no thanks/ack messages unless asked a direct question; do not message other agents at startup."}}
+EOF
