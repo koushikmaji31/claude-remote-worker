@@ -19,15 +19,32 @@ fi
 
 namefile=/tmp/claude-bus/names/$sid
 if [ -n "$CLAUDE_BUS_NAME" ]; then
+  # Full explicit override always wins.
   name=$CLAUDE_BUS_NAME
 elif [ -s "$namefile" ]; then
+  # Reuse the name already assigned to this session.
   name=$(cat "$namefile")
 else
+  # Derive a per-machine base name and append the lowest free number,
+  # e.g. koushik_1, koushik_2 (or shantanu_1 on another machine).
+  # Base = CLAUDE_BUS_USER if set, else the account's first name (from the
+  # OS full name, e.g. "Koushik Maji" -> koushik), else the login name with
+  # trailing digits stripped. Falls back to "agent".
+  base=${CLAUDE_BUS_USER:-}
+  if [ -z "$base" ]; then
+    fullname=$(id -F 2>/dev/null)          # macOS real name, e.g. "Koushik Maji"
+    base=${fullname%% *}                    # first token -> "Koushik"
+  fi
+  [ -z "$base" ] && base=$(id -un 2>/dev/null || whoami)
+  base=$(printf '%s' "$base" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_-')
+  base=${base%%[0-9]*}
+  [ -z "$base" ] && base=agent
   taken=$(curl -s -m 3 "${BUS_AUTH[@]}" "$BUS_URL/who")
-  name=agent-f
-  for c in agent-a agent-b agent-c agent-d agent-e; do
-    case "$taken" in *"\"$c\""*) ;; *) name=$c; break ;; esac
+  n=1
+  while case "$taken" in *"\"${base}_${n}\""*) true ;; *) false ;; esac; do
+    n=$((n + 1))
   done
+  name=${base}_${n}
 fi
 printf '%s' "$name" > "$namefile"
 # Register on the bus so broadcasts reach us (does NOT consume queued messages)
