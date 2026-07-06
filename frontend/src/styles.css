@@ -6,25 +6,25 @@
    ============================================================ */
 
 :root {
-  /* Brand — electric cyan, agno-style */
-  --brand-500: #22d3ee;
-  --brand-600: #06b6d4;
-  --brand-700: #0e7490;
-  --brand-soft: rgba(34, 211, 238, 0.12);
+  /* Brand — agno orange */
+  --brand-500: #ff5a1f;
+  --brand-600: #ff4017;
+  --brand-700: #e2350c;
+  --brand-soft: rgba(255, 64, 23, 0.10);
 
-  /* Neutral surfaces (dark, default) */
-  --bg: #08090b;
-  --bg-elevated: #131318;
-  --surface: #131318;
-  --surface-2: #1b1c22;
-  --border: #26272f;
-  --border-strong: #34363f;
+  /* Neutral surfaces (light, default — warm agno grey) */
+  --bg: #f2f1ec;
+  --bg-elevated: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #ecebe5;
+  --border: #dedcd4;
+  --border-strong: #cbc9bf;
 
   /* Text */
-  --text: #f5f6f7;
-  --text-muted: #a1a1aa;
-  --text-faint: #6b6c76;
-  --text-on-brand: #04141a;
+  --text: #16150f;
+  --text-muted: #6b6a61;
+  --text-faint: #9a988d;
+  --text-on-brand: #ffffff;
 
   /* Semantic */
   --success: #22c55e;
@@ -43,10 +43,10 @@
   --r-pill: 999px;
 
   /* Shadow */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.55);
-  --glow-brand: 0 0 0 1px rgba(34, 211, 238, 0.4), 0 0 24px rgba(34, 211, 238, 0.25);
+  --shadow-sm: 0 1px 2px rgba(22, 21, 15, 0.06), 0 1px 3px rgba(22, 21, 15, 0.08);
+  --shadow-md: 0 4px 8px -2px rgba(22, 21, 15, 0.08), 0 2px 4px -2px rgba(22, 21, 15, 0.05);
+  --shadow-lg: 0 12px 24px -6px rgba(22, 21, 15, 0.12), 0 4px 8px -4px rgba(22, 21, 15, 0.06);
+  --glow-brand: 0 6px 20px rgba(255, 64, 23, 0.35);
 
   /* Spacing scale */
   --sp-1: 4px;
@@ -61,68 +61,69 @@
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --mono: 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
 
-  --ring: 0 0 0 3px rgba(34, 211, 238, 0.35);
+  --ring: 0 0 0 3px rgba(255, 64, 23, 0.30);
 }
 
-/* Light palette — explicit opt-in via toggle, or OS preference when unset */
-@media (prefers-color-scheme: light) {
+/* Dark palette — via OS preference when no explicit toggle, or [data-theme='dark'] */
+@media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']):not([data-theme='dark']) {
-    --bg: #f7f8fa;
-    --bg-elevated: #ffffff;
-    --surface: #ffffff;
-    --surface-2: #f1f3f6;
-    --border: #e4e7ec;
-    --border-strong: #d0d5dd;
-    --text: #101828;
-    --text-muted: #667085;
-    --text-faint: #98a2b3;
-    --text-on-brand: #04141a;
-    --brand-soft: #eef2ff;
-    --success-soft: #ecfdf3;
-    --warning-soft: #fffaeb;
-    --danger-soft: #fef3f2;
-    --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
-    --shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.05);
-    --shadow-lg: 0 12px 24px -6px rgba(16, 24, 40, 0.12), 0 4px 8px -4px rgba(16, 24, 40, 0.06);
+    --bg: #0d0c0a;
+    --bg-elevated: #17160f;
+    --surface: #17160f;
+    --surface-2: #201e16;
+    --border: #302d22;
+    --border-strong: #423e30;
+    --text: #f5f4ee;
+    --text-muted: #a5a294;
+    --text-faint: #6f6c5f;
+    --text-on-brand: #ffffff;
+    --brand-soft: rgba(255, 90, 31, 0.14);
+    --success-soft: rgba(34, 197, 94, 0.14);
+    --warning-soft: rgba(245, 158, 11, 0.14);
+    --danger-soft: rgba(244, 63, 94, 0.14);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.55);
   }
 }
 
-/* Explicit light override (theme toggle) */
+/* Explicit light override (theme toggle) — same as :root default */
 :root[data-theme='light'] {
-  --bg: #f7f8fa;
+  --bg: #f2f1ec;
   --bg-elevated: #ffffff;
   --surface: #ffffff;
-  --surface-2: #f1f3f6;
-  --border: #e4e7ec;
-  --border-strong: #d0d5dd;
-  --text: #101828;
-  --text-muted: #667085;
-  --text-faint: #98a2b3;
-  --text-on-brand: #04141a;
-  --brand-soft: #eef2ff;
+  --surface-2: #ecebe5;
+  --border: #dedcd4;
+  --border-strong: #cbc9bf;
+  --text: #16150f;
+  --text-muted: #6b6a61;
+  --text-faint: #9a988d;
+  --text-on-brand: #ffffff;
+  --brand-soft: rgba(255, 64, 23, 0.10);
   --success-soft: #ecfdf3;
   --warning-soft: #fffaeb;
   --danger-soft: #fef3f2;
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
-  --shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.05);
-  --shadow-lg: 0 12px 24px -6px rgba(16, 24, 40, 0.12), 0 4px 8px -4px rgba(16, 24, 40, 0.06);
+  --shadow-sm: 0 1px 2px rgba(22, 21, 15, 0.06), 0 1px 3px rgba(22, 21, 15, 0.08);
+  --shadow-md: 0 4px 8px -2px rgba(22, 21, 15, 0.08), 0 2px 4px -2px rgba(22, 21, 15, 0.05);
+  --shadow-lg: 0 12px 24px -6px rgba(22, 21, 15, 0.12), 0 4px 8px -4px rgba(22, 21, 15, 0.06);
 }
 
-/* Explicit dark override (theme toggle) — same as :root default */
+/* Explicit dark override (theme toggle) */
 :root[data-theme='dark'] {
-  --bg: #08090b;
-  --bg-elevated: #131318;
-  --surface: #131318;
-  --surface-2: #1b1c22;
-  --border: #26272f;
-  --border-strong: #34363f;
-  --text: #f5f6f7;
-  --text-muted: #a1a1aa;
-  --text-faint: #6b6c76;
-  --brand-soft: rgba(34, 211, 238, 0.12);
-  --success-soft: rgba(34, 197, 94, 0.12);
-  --warning-soft: rgba(245, 158, 11, 0.12);
-  --danger-soft: rgba(244, 63, 94, 0.12);
+  --bg: #0d0c0a;
+  --bg-elevated: #17160f;
+  --surface: #17160f;
+  --surface-2: #201e16;
+  --border: #302d22;
+  --border-strong: #423e30;
+  --text: #f5f4ee;
+  --text-muted: #a5a294;
+  --text-faint: #6f6c5f;
+  --text-on-brand: #ffffff;
+  --brand-soft: rgba(255, 90, 31, 0.14);
+  --success-soft: rgba(34, 197, 94, 0.14);
+  --warning-soft: rgba(245, 158, 11, 0.14);
+  --danger-soft: rgba(244, 63, 94, 0.14);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
   --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.55);
@@ -157,7 +158,7 @@ h2 { font-size: 16px; font-weight: 650; margin: 0 0 var(--sp-3); letter-spacing:
 .muted { color: var(--text-muted); font-size: 13px; }
 .faint { color: var(--text-faint); font-size: 12px; }
 .text-gradient {
-  background: linear-gradient(100deg, var(--brand-500), #7dd3fc 60%, var(--brand-500));
+  background: linear-gradient(100deg, var(--brand-600), #ff8a3d 60%, var(--brand-600));
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 
@@ -322,8 +323,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 .brand-mark {
   width: 40px; height: 40px; border-radius: var(--r-md);
   display: inline-flex; align-items: center; justify-content: center;
-  font-weight: 750; color: #04141a; font-size: 15px; letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--brand-500), #7dd3fc);
+  font-weight: 750; color: #ffffff; font-size: 15px; letter-spacing: -0.02em;
+  background: linear-gradient(135deg, var(--brand-500), var(--brand-700));
   box-shadow: var(--shadow-sm);
 }
 .nav-links { display: flex; gap: var(--sp-5); align-items: center; }
@@ -334,7 +335,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 .hero-glow {
   position: absolute; top: -180px; left: 50%; transform: translateX(-50%);
   width: 900px; height: 500px; pointer-events: none; z-index: 0;
-  background: radial-gradient(closest-side, rgba(34, 211, 238, 0.16), transparent 70%);
+  background: radial-gradient(closest-side, rgba(255, 64, 23, 0.14), transparent 70%);
   filter: blur(10px);
 }
 .hero {
