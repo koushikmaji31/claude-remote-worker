@@ -152,7 +152,7 @@ export default function Landing() {
             <div className="faint">Projects · Members · Chat · Git</div>
           </div>
         </div>
-        <div className="row">
+        <div className="row" style={{ gap: 'var(--sp-5)' }}>
           <ThemeToggle />
           {authed && user && (
             <>
@@ -170,15 +170,25 @@ export default function Landing() {
       </header>
 
       {!authed && (
-        <div className="hero">
-          <div>
-            <h1 style={{ fontSize: 34, lineHeight: 1.1 }}>Where your team ships together.</h1>
-            <p className="muted" style={{ fontSize: 15, maxWidth: 420 }}>
-              Create a project, invite your teammates, chat in real time, and review git branches
-              and diffs — all in one place.
-            </p>
+        <div className="hero-wrap">
+          <div className="hero-glow" aria-hidden />
+          <div className="hero">
+            <div>
+              <h1 className="hero-title">
+                Where your team ships <span className="text-gradient">together</span>.
+              </h1>
+              <p className="muted" style={{ fontSize: 15.5, maxWidth: 420, marginTop: 'var(--sp-3)' }}>
+                Create a project, invite your teammates, chat in real time, and review git branches
+                and diffs — all in one place.
+              </p>
+              <div className="feature-strip">
+                <span className="feature-item"><span className="check">✓</span>Real-time chat</span>
+                <span className="feature-item"><span className="check">✓</span>Git diffs &amp; branches</span>
+                <span className="feature-item"><span className="check">✓</span>Instant invites</span>
+              </div>
+            </div>
+            <AuthForm onAuthed={() => setAuthed(true)} />
           </div>
-          <AuthForm onAuthed={() => setAuthed(true)} />
         </div>
       )}
 
