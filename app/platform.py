@@ -59,10 +59,15 @@ def init_db():
             project_id INTEGER REFERENCES projects(id),
             sender TEXT NOT NULL,
             text TEXT NOT NULL,
+            image TEXT,
             ts REAL NOT NULL
         );
         """
     )
+    # Safe migration for DBs created before the image column existed.
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "image" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN image TEXT")
     conn.commit()
     conn.close()
 
@@ -330,7 +335,8 @@ def transfer_admin(pid: int, body: TransferIn, user=Depends(current_user)):
 # ---------- Messages ----------
 
 class MessageIn(BaseModel):
-    text: str
+    text: str = ""
+    image: str | None = None  # optional data URL ("data:image/...;base64,...")
 
 
 @app.post("/api/projects/{pid}/messages")
@@ -338,9 +344,13 @@ def post_message(pid: int, body: MessageIn, user=Depends(current_user)):
     conn = db()
     try:
         require_member(conn, pid, user["id"])
+        if not (body.text or "").strip() and not body.image:
+            raise HTTPException(400, "Message must have text or an image")
+        if body.image and len(body.image) > 2 * 1024 * 1024:
+            raise HTTPException(413, "Image exceeds 2MB limit")
         conn.execute(
-            "INSERT INTO messages(project_id, sender, text, ts) VALUES(?,?,?,?)",
-            (pid, user["name"], body.text, time.time()),
+            "INSERT INTO messages(project_id, sender, text, image, ts) VALUES(?,?,?,?,?)",
+            (pid, user["name"], body.text, body.image, time.time()),
         )
         conn.commit()
         return {"ok": True}
@@ -354,7 +364,7 @@ def get_messages(pid: int, since_id: int = 0, user=Depends(current_user)):
     try:
         require_member(conn, pid, user["id"])
         rows = conn.execute(
-            "SELECT id, sender, text, ts FROM messages WHERE project_id=? AND id>? ORDER BY id",
+            "SELECT id, sender, text, image, ts FROM messages WHERE project_id=? AND id>? ORDER BY id",
             (pid, since_id),
         ).fetchall()
         return {"messages": [dict(r) for r in rows]}
