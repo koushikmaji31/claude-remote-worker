@@ -77,15 +77,22 @@ export default function Project() {
   if (!project) return <div className="container muted">Loading…</div>
 
   return (
-    <div className="container">
-      <div className="row spread" style={{ marginBottom: 'var(--sp-5)' }}>
-        <div className="row">
-          <h1>{project.name}</h1>
-          <span className="badge">{project.members.length} member{project.members.length === 1 ? '' : 's'}</span>
-        </div>
-        <div className="row">
-          <ThemeToggle />
-          <Link to="/">← My projects</Link>
+    <div className="container workspace">
+      <div className="workspace-head">
+        <div className="row spread">
+          <div className="row">
+            <span className="avatar workspace-avatar" aria-hidden>{initials(project.name)}</span>
+            <div>
+              <h1>{project.name}</h1>
+              <span className="faint">
+                {project.members.length} member{project.members.length === 1 ? '' : 's'} · shared workspace
+              </span>
+            </div>
+          </div>
+          <div className="row">
+            <ThemeToggle />
+            <Link to="/">← My projects</Link>
+          </div>
         </div>
       </div>
 

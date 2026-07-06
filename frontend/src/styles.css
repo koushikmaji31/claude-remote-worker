@@ -269,31 +269,85 @@ a:hover { text-decoration: underline; }
 code { background: var(--surface-2); padding: 2px 6px; border-radius: var(--r-sm); font-family: var(--mono); font-size: 12px; }
 hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 
-/* ---------- Chat / ChatPanel (component owner: agent-d, styles owner: agent-e) ---------- */
+/* ---------- Chat / ChatPanel (owner: acer_1) ---------- */
 .msglog {
-  display: flex; flex-direction: column; gap: var(--sp-3);
-  max-height: 360px; overflow-y: auto;
-  padding: var(--sp-2);
-  border: 1px solid var(--border); border-radius: var(--r-md);
+  display: flex; flex-direction: column; gap: var(--sp-4);
+  max-height: 420px; overflow-y: auto;
+  padding: var(--sp-4);
+  border: 1px solid var(--border); border-radius: var(--r-lg);
   background: var(--surface-2);
 }
-.msg { display: flex; gap: var(--sp-3); align-items: flex-start; max-width: 88%; }
-.msg .meta { display: flex; flex-direction: column; line-height: 1.2; }
-.msg .sender { font-weight: 600; font-size: 13px; color: var(--text); }
+.msg { display: flex; gap: var(--sp-3); align-items: flex-start; max-width: 82%; }
+.msg .meta { display: flex; flex-direction: column; gap: 3px; line-height: 1.35; min-width: 0; }
+.msg .sender { font-weight: 650; font-size: 13px; color: var(--text); }
 .msg .ts { color: var(--text-faint); font-size: 11px; }
+/* Every message is a bubble now (was flat text before) */
 .msg .body {
   font-size: 14px; white-space: pre-wrap; word-break: break-word;
-  color: var(--text); margin-top: 2px;
+  color: var(--text);
+  background: var(--surface); border: 1px solid var(--border);
+  padding: 8px 12px; border-radius: var(--r-md); border-top-left-radius: 4px;
+  box-shadow: var(--shadow-sm);
 }
-/* Own messages: right-aligned bubble */
+/* Own messages: right-aligned, brand-tinted bubble */
 .msg.me { align-self: flex-end; flex-direction: row-reverse; }
 .msg.me .meta { align-items: flex-end; }
 .msg.me .body {
-  background: var(--brand-soft); color: var(--text);
-  padding: 8px 12px; border-radius: var(--r-md);
+  background: var(--brand-soft); border-color: transparent; box-shadow: none;
+  border-radius: var(--r-md); border-top-right-radius: 4px;
 }
-.composer { display: flex; gap: var(--sp-2); align-items: flex-end; margin-top: var(--sp-3); }
+
+/* Image attachments in messages */
+.msg-img-link { display: inline-block; margin-top: 2px; line-height: 0; }
+.msg-img {
+  max-width: 260px; max-height: 260px; width: auto; height: auto;
+  border-radius: var(--r-md); border: 1px solid var(--border);
+  cursor: zoom-in; display: block;
+}
+
+.composer { display: flex; gap: var(--sp-2); align-items: flex-end; margin-top: var(--sp-4); }
 .composer textarea { flex: 1; min-height: 44px; }
+.btn.btn-attach { padding: 10px 12px; font-size: 16px; line-height: 1; }
+
+/* Pending-attachment preview above the composer */
+.composer-preview {
+  position: relative; display: inline-block; margin-top: var(--sp-3);
+}
+.composer-preview img {
+  max-width: 140px; max-height: 140px; border-radius: var(--r-md);
+  border: 1px solid var(--border); display: block;
+}
+.composer-preview-remove {
+  position: absolute; top: -8px; right: -8px;
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font-size: 15px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow-sm);
+}
+.composer-preview-remove:hover { background: var(--danger); color: #fff; border-color: transparent; }
+
+/* ---------- Workspace / Project page polish (owner: acer_1) ---------- */
+.workspace-head {
+  margin-bottom: var(--sp-5); padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.workspace-head h1 { line-height: 1.1; }
+.avatar.workspace-avatar {
+  width: 46px; height: 46px; font-size: 17px; border-radius: var(--r-md);
+  background: linear-gradient(135deg, var(--brand-500), var(--brand-700));
+}
+/* Section-header accent bar — scoped to the workspace so landing/auth are untouched */
+.workspace .card-head h2 { position: relative; padding-left: 12px; }
+.workspace .card-head h2::before {
+  content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 15px; border-radius: 2px; background: var(--brand-600);
+}
+.workspace .git-panel > h2 { position: relative; padding-left: 12px; margin-bottom: var(--sp-2); }
+.workspace .git-panel > h2::before {
+  content: ''; position: absolute; left: 0; top: 8px;
+  width: 3px; height: 15px; border-radius: 2px; background: var(--brand-600);
+}
 
 /* ---------- Inline text states (legacy-compat: .error / .ok) ---------- */
 .error { color: var(--danger); font-size: 14px; }
