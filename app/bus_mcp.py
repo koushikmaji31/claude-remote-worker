@@ -55,6 +55,8 @@ TOOLS = [
                 "sender": {"type": "string", "description": "Your bus name (told to you at session start)"},
                 "text": {"type": "string", "description": "Message text"},
                 "to": {"type": ["string", "null"], "description": "Recipient name, or null to broadcast"},
+                "image": {"type": ["string", "null"], "description": "Optional image as a data URL "
+                          "('data:image/png;base64,...'), max 2MB. Shown to the recipient inline."},
             },
             "required": ["sender", "text"],
         },
@@ -81,7 +83,8 @@ TOOLS = [
 
 def call_tool(name, args):
     if name == "bus_send":
-        return _http("POST", "/send", {"sender": args["sender"], "text": args["text"], "to": args.get("to")})
+        return _http("POST", "/send", {"sender": args["sender"], "text": args["text"],
+                                       "to": args.get("to"), "image": args.get("image")})
     if name == "bus_check":
         return _http("GET", f"/recv?name={args['name']}&timeout=0")
     if name == "bus_who":

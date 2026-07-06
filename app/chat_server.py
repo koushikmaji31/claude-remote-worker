@@ -30,7 +30,7 @@ import sqlite3
 import threading
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -55,6 +55,7 @@ with _conn() as _c:
             sender TEXT NOT NULL,
             recipient TEXT,            -- NULL = broadcast
             text TEXT NOT NULL,
+            image TEXT,                -- optional data URL ("data:image/png;base64,...")
             ts REAL NOT NULL
         );
         CREATE TABLE IF NOT EXISTS clients(
@@ -63,6 +64,10 @@ with _conn() as _c:
             last_seen REAL NOT NULL
         );
     """)
+    # Safe migration for DBs created before the image column existed.
+    _cols = {r["name"] for r in _c.execute("PRAGMA table_info(messages)").fetchall()}
+    if "image" not in _cols:
+        _c.execute("ALTER TABLE messages ADD COLUMN image TEXT")
 
 # --- auth token (persists across restarts) ---
 _TOKEN_FILE = os.path.join(_DIR, "token")
@@ -90,8 +95,9 @@ async def _auth_remote(request: Request, call_next):
 
 class SendRequest(BaseModel):
     sender: str
-    text: str
+    text: str = ""
     to: Optional[str] = None  # None = broadcast
+    image: Optional[str] = None  # optional data URL ("data:image/...;base64,...")
 
 
 def _ensure_client(c, name: str):
@@ -183,17 +189,22 @@ def who():
 @app.get("/history")
 def history():
     with _lock, _conn() as c:
-        rows = c.execute("SELECT sender, recipient, text, ts FROM messages ORDER BY id").fetchall()
+        rows = c.execute("SELECT sender, recipient, text, image, ts FROM messages ORDER BY id").fetchall()
         return {"messages": [
-            {"from": r["sender"], "to": r["recipient"], "text": r["text"], "ts": r["ts"]}
+            {"from": r["sender"], "to": r["recipient"], "text": r["text"], "image": r["image"], "ts": r["ts"]}
             for r in rows]}
+
+
+MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2MB cap on image data-URL payloads
 
 
 @app.post("/send")
 def send(req: SendRequest):
+    if req.image and len(req.image) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Image exceeds 2MB limit")
     with _lock, _conn() as c:
-        c.execute("INSERT INTO messages(sender, recipient, text, ts) VALUES(?,?,?,?)",
-                  (req.sender, req.to, req.text, time.time()))
+        c.execute("INSERT INTO messages(sender, recipient, text, image, ts) VALUES(?,?,?,?,?)",
+                  (req.sender, req.to, req.text, req.image, time.time()))
     return {"ok": True, "delivered_to": req.to or "broadcast"}
 
 
@@ -206,14 +217,14 @@ def recv(name: str, timeout: int = 25):
         with _lock, _conn() as c:
             cur = c.execute("SELECT cursor FROM clients WHERE name=?", (name,)).fetchone()["cursor"]
             rows = c.execute(
-                "SELECT id, sender, recipient, text, ts FROM messages "
+                "SELECT id, sender, recipient, text, image, ts FROM messages "
                 "WHERE id>? AND (recipient=? OR (recipient IS NULL AND sender!=?)) ORDER BY id",
                 (cur, name, name)).fetchall()
             if rows:
                 c.execute("UPDATE clients SET cursor=?, last_seen=? WHERE name=?",
                           (rows[-1]["id"], time.time(), name))
                 return {"messages": [
-                    {"from": r["sender"], "to": r["recipient"], "text": r["text"], "ts": r["ts"]}
+                    {"from": r["sender"], "to": r["recipient"], "text": r["text"], "image": r["image"], "ts": r["ts"]}
                     for r in rows]}
             c.execute("UPDATE clients SET last_seen=? WHERE name=?", (time.time(), name))
         if time.time() >= deadline:
