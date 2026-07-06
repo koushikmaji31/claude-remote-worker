@@ -305,6 +305,17 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
   margin-bottom: var(--sp-4);
 }
 .git-panel .git-panel-row > * { flex: 1 1 160px; }
+.git-status {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  padding: 8px 14px; border-radius: var(--r-md);
+  font-size: 13.5px; font-weight: 550; margin: 0 0 var(--sp-3);
+}
+.git-status.error { background: var(--danger-soft); color: var(--danger); }
+.git-status.ok { background: var(--success-soft); color: var(--success); }
+.git-status::before {
+  content: ''; width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor; flex-shrink: 0;
+}
 .git-diff {
   font-family: var(--mono);
   font-size: 12.5px;
@@ -318,10 +329,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
   white-space: pre;
   color: var(--text);
 }
-/* Colorize unified-diff lines if wrapped per-line; safe no-op otherwise */
-.git-diff .add { color: var(--success); background: var(--success-soft); display: block; }
-.git-diff .del { color: var(--danger); background: var(--danger-soft); display: block; }
-.git-diff .hunk { color: var(--info); display: block; }
+/* Colorize unified-diff lines (each line is a <span> that keeps its own
+   newline, so these stay inline — no display:block or lines double-space). */
+.git-diff .add { color: var(--success); background: var(--success-soft); }
+.git-diff .del { color: var(--danger); background: var(--danger-soft); }
+.git-diff .hunk { color: var(--info); font-weight: 600; }
 
 /* ---------- Landing / Auth ---------- */
 .brand-mark {

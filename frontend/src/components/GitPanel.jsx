@@ -4,6 +4,14 @@
 import { useState } from 'react'
 import { gitBranches, gitDiff, gitConflicts } from '../lib/rpc'
 
+// Class a single unified-diff line so styles.css can colorize it.
+function diffLineClass(line) {
+  if (line.startsWith('@@')) return 'hunk'
+  if (line.startsWith('+') && !line.startsWith('+++')) return 'add'
+  if (line.startsWith('-') && !line.startsWith('---')) return 'del'
+  return ''
+}
+
 export default function GitPanel() {
   const [repoPath, setRepoPath] = useState('')
   const [branches, setBranches] = useState(null)
@@ -52,7 +60,7 @@ export default function GitPanel() {
 
   return (
     <section className="git-panel card">
-      <h3>Git coordination</h3>
+      <h2>Git coordination</h2>
       <p className="muted">
         Inspect a shared repo's branches and check for merge conflicts before merging.
       </p>
@@ -65,10 +73,12 @@ export default function GitPanel() {
           onChange={(e) => setRepoPath(e.target.value)}
           required
         />
-        <button type="submit" disabled={busy || !repoPath}>Load branches</button>
+        <button type="submit" className="btn" disabled={busy || !repoPath}>
+          {busy ? 'Loading…' : 'Load branches'}
+        </button>
       </form>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="alert error">{error}</p>}
 
       {branches && (
         <>
@@ -89,13 +99,13 @@ export default function GitPanel() {
                 ))}
               </select>
             </label>
-            <button onClick={compare} disabled={busy || !base || !head || base === head}>
+            <button className="btn secondary" onClick={compare} disabled={busy || !base || !head || base === head}>
               Diff + conflict check
             </button>
           </div>
 
           {conflicts !== null && (
-            <p className={conflicts.length ? 'error' : 'ok'}>
+            <p className={`git-status ${conflicts.length ? 'error' : 'ok'}`}>
               {conflicts.length
                 ? `Merge conflicts in ${conflicts.length} file(s): ${conflicts.join(', ')}`
                 : 'No merge conflicts between these branches.'}
@@ -103,7 +113,11 @@ export default function GitPanel() {
           )}
 
           {diff && (
-            <pre className="git-diff" aria-label="unified diff">{diff}</pre>
+            <pre className="git-diff" aria-label="unified diff">
+              {diff.split('\n').map((line, i) => (
+                <span key={i} className={diffLineClass(line)}>{line + '\n'}</span>
+              ))}
+            </pre>
           )}
         </>
       )}
