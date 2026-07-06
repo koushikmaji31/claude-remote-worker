@@ -59,7 +59,7 @@ export default function Project() {
   }
 
   function copyInvite() {
-    const link = `http://localhost:5173/?join=${project.invite_code}`
+    const link = `${window.location.origin}/?join=${project.invite_code}`
     navigator.clipboard.writeText(link).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
@@ -101,7 +101,7 @@ export default function Project() {
           </div>
           <p className="muted">
             Share this link so others can join:<br />
-            <code>http://localhost:5173/?join={project.invite_code}</code>
+            <code>{window.location.origin}/?join={project.invite_code}</code>
           </p>
         </div>
       )}
