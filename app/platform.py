@@ -9,6 +9,8 @@ from typing import Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 DB_PATH = Path(__file__).resolve().parent.parent / "platform.db"
@@ -442,3 +444,23 @@ def rpc(body: RpcIn, user=Depends(current_user)):
         return {"error": {"code": -32602, "message": str(e)}, "id": body.id}
     except Exception as e:
         return {"error": {"code": -32000, "message": str(e)}, "id": body.id}
+
+
+# --- Serve the built frontend (single-origin: API + SPA on one port) ---
+# Registered LAST so all /api and /rpc routes above take precedence.
+_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if (_DIST / "index.html").exists():
+    _ASSETS = _DIST / "assets"
+    if _ASSETS.is_dir():
+        app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")
+
+    @app.get("/{full_path:path}")
+    def spa(full_path: str):
+        # Never shadow the API surface.
+        if full_path.startswith(("api", "rpc")) or full_path in ("health",):
+            raise HTTPException(404, "Not found")
+        candidate = _DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        # Client-side routes (e.g. /project/5) fall back to the SPA shell.
+        return FileResponse(_DIST / "index.html")
