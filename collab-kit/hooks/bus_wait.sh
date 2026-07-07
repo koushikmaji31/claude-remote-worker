@@ -11,7 +11,7 @@ NAME=${1:?usage: bus_wait.sh <name>}
 
 while true; do
   [ -f /tmp/claude-bus/off ] && exit 0
-  out=$(curl -s -m 60 "${BUS_AUTH[@]}" "$BUS_URL/recv?name=$NAME&timeout=50")
+  out=$(curl -s -m 60 "${BUS_AUTH[@]}" "$BUS_URL/recv?name=$NAME&timeout=50&room=$BUS_ROOM")
   if [ -z "$out" ]; then sleep 3; continue; fi
   if [ "$out" != '{"messages":[]}' ]; then
     # Drop pure roster notices (joins) — not worth waking the agent for.

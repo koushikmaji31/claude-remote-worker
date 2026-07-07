@@ -24,6 +24,16 @@ fi
 BUS_AUTH=()
 [ -n "$BUS_TOKEN" ] && BUS_AUTH=(-H "Authorization: Bearer $BUS_TOKEN")
 
+# Room: which project group this session is joined to.
+# env CLAUDE_BUS_ROOM > file /tmp/claude-bus/room > default 'global' (shared bus).
+if [ -n "$CLAUDE_BUS_ROOM" ]; then
+  BUS_ROOM=$CLAUDE_BUS_ROOM
+elif [ -s /tmp/claude-bus/room ]; then
+  BUS_ROOM=$(cat /tmp/claude-bus/room)
+else
+  BUS_ROOM=global
+fi
+
 bus_is_local() {
   case "$BUS_URL" in
     http://127.0.0.1:*|http://localhost:*|http://127.0.0.1|http://localhost) return 0 ;;

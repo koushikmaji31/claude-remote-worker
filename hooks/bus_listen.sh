@@ -12,7 +12,7 @@ namefile=/tmp/claude-bus/names/$sid
 name=$(cat "$namefile")
 . "$(dirname "$0")/bus_env.sh"
 
-out=$(curl -s -m 10 "${BUS_AUTH[@]}" "$BUS_URL/recv?name=$name&timeout=3")
+out=$(curl -s -m 10 "${BUS_AUTH[@]}" "$BUS_URL/recv?name=$name&timeout=3&room=$BUS_ROOM")
 if [ -n "$out" ]; then
   result=$(printf '%s' "$out" | python3 "$(dirname "$0")/bus_format.py" stop)
   if [ -n "$result" ]; then
