@@ -477,12 +477,21 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 .cmd-row { display: flex; gap: var(--sp-2); align-items: stretch; }
 .cmd-box {
   flex: 1; min-width: 0;
+  display: flex; align-items: center;
   font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
   background: var(--surface-2); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--r-md);
   padding: 10px 12px;
-  overflow-x: auto; white-space: pre; word-break: normal;
+  overflow-x: auto; white-space: nowrap; word-break: normal;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
+.cmd-box::-webkit-scrollbar { height: 6px; }
+.cmd-box::-webkit-scrollbar-track { background: transparent; }
+.cmd-box::-webkit-scrollbar-thumb {
+  background: var(--border-strong); border-radius: var(--r-pill);
+}
+.cmd-box::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 .cmd-row .btn { flex-shrink: 0; }
 
 .project-row { cursor: pointer; transition: background 0.12s; border-radius: var(--r-sm); padding-left: 8px; padding-right: 8px; margin: 0 -8px; }
@@ -623,3 +632,10 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
   .nav-item > span:first-of-type { flex: none; }
   .main-body { padding: var(--sp-4); }
 }
+
+/* ---------- Subtle, theme-aware scrollbars everywhere ---------- */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--r-pill); border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: padding-box; }
