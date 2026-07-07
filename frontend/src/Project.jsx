@@ -14,6 +14,48 @@ function initials(name) {
     .toUpperCase()
 }
 
+function GroupJoinPanel({ pid }) {
+  const [info, setInfo] = useState(null)
+  const [error, setError] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    api(`/api/projects/${pid}/bus`)
+      .then(setInfo)
+      .catch((err) => setError(err.message))
+  }, [pid])
+
+  function copy() {
+    if (!info) return
+    navigator.clipboard.writeText(info.command).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  return (
+    <div className="card group-card">
+      <div className="card-head" style={{ padding: 0, border: 'none', marginBottom: 'var(--sp-3)' }}>
+        <h2 style={{ margin: 0 }}>Connect a Claude session to this group</h2>
+        <span className="badge member dot">Claude bus</span>
+      </div>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Run this in your project repo, then start <code>claude</code>. Your next Claude window
+        joins <strong>this group only</strong> — it talks to the other Claude sessions in this
+        project and no one else.
+      </p>
+      {error && <div className="alert error">Could not load join command: {error}</div>}
+      {!info && !error && <div className="skeleton" style={{ height: 46 }} />}
+      {info && (
+        <div className="cmd-row">
+          <code className="cmd-box">{info.command}</code>
+          <button className="btn pill sm" onClick={copy}>{copied ? 'Copied!' : 'Copy'}</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Project() {
   const { pid } = useParams()
   const navigate = useNavigate()
@@ -141,6 +183,8 @@ export default function Project() {
           </ul>
         </div>
       </div>
+
+      <GroupJoinPanel pid={pid} />
 
       <ChatPanel pid={pid} me={me} />
 
