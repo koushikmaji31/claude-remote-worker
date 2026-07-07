@@ -1,25 +1,24 @@
 import { useEffect, useState } from 'react'
 
 const KEY = 'theme'
+const DEFAULT = 'dark'
 
 export function applyTheme(theme) {
-  const root = document.documentElement
-  if (theme === 'system') root.removeAttribute('data-theme')
-  else root.setAttribute('data-theme', theme)
+  document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark')
 }
 
 export function getStoredTheme() {
-  return localStorage.getItem(KEY) || 'system'
+  const t = localStorage.getItem(KEY)
+  return t === 'light' || t === 'dark' ? t : DEFAULT
 }
 
-/** Cycles system -> light -> dark -> system */
+/** Two-state theme: dark <-> light (no system option). */
 export function useTheme() {
   const [theme, setTheme] = useState(getStoredTheme)
 
   useEffect(() => {
     applyTheme(theme)
-    if (theme === 'system') localStorage.removeItem(KEY)
-    else localStorage.setItem(KEY, theme)
+    localStorage.setItem(KEY, theme)
   }, [theme])
 
   return [theme, setTheme]
