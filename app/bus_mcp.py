@@ -31,6 +31,12 @@ BUS_URL = BUS_URL.rstrip("/")
 BUS_TOKEN = os.environ.get("CLAUDE_BUS_TOKEN") or _read("/tmp/claude-bus/token")
 
 
+def _room(args):
+    """Room resolves like the hooks: explicit arg > env > file > 'global'."""
+    return (args.get("room") or os.environ.get("CLAUDE_BUS_ROOM")
+            or _read("/tmp/claude-bus/room") or "global")
+
+
 def _http(method, path, body=None):
     req = urllib.request.Request(BUS_URL + path, method=method)
     req.add_header("Content-Type", "application/json")
@@ -57,6 +63,8 @@ TOOLS = [
                 "to": {"type": ["string", "null"], "description": "Recipient name, or null to broadcast"},
                 "image": {"type": ["string", "null"], "description": "Optional image as a data URL "
                           "('data:image/png;base64,...'), max 2MB. Shown to the recipient inline."},
+                "room": {"type": ["string", "null"], "description": "Optional group to send to; "
+                         "defaults to this session's joined group (CLAUDE_BUS_ROOM / /tmp/claude-bus/room)."},
             },
             "required": ["sender", "text"],
         },
@@ -82,13 +90,15 @@ TOOLS = [
 
 
 def call_tool(name, args):
+    room = _room(args)
     if name == "bus_send":
         return _http("POST", "/send", {"sender": args["sender"], "text": args["text"],
-                                       "to": args.get("to"), "image": args.get("image")})
+                                       "to": args.get("to"), "image": args.get("image"),
+                                       "room": room})
     if name == "bus_check":
-        return _http("GET", f"/recv?name={args['name']}&timeout=0")
+        return _http("GET", f"/recv?name={args['name']}&timeout=0&room={room}")
     if name == "bus_who":
-        return _http("GET", "/who")
+        return _http("GET", f"/who?room={room}")
     return {"error": f"unknown tool {name}"}
 
 

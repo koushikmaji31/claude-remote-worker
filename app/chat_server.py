@@ -56,18 +56,25 @@ with _conn() as _c:
             recipient TEXT,            -- NULL = broadcast
             text TEXT NOT NULL,
             image TEXT,                -- optional data URL ("data:image/png;base64,...")
+            room TEXT NOT NULL DEFAULT 'global',  -- project group (invite code); 'global' = shared bus
             ts REAL NOT NULL
         );
         CREATE TABLE IF NOT EXISTS clients(
             name TEXT PRIMARY KEY,
             cursor INTEGER NOT NULL DEFAULT 0,   -- last delivered message id
+            room TEXT NOT NULL DEFAULT 'global', -- the group this session is joined to
             last_seen REAL NOT NULL
         );
     """)
-    # Safe migration for DBs created before the image column existed.
-    _cols = {r["name"] for r in _c.execute("PRAGMA table_info(messages)").fetchall()}
-    if "image" not in _cols:
+    # Safe migrations for DBs created before newer columns existed.
+    _mcols = {r["name"] for r in _c.execute("PRAGMA table_info(messages)").fetchall()}
+    if "image" not in _mcols:
         _c.execute("ALTER TABLE messages ADD COLUMN image TEXT")
+    if "room" not in _mcols:
+        _c.execute("ALTER TABLE messages ADD COLUMN room TEXT NOT NULL DEFAULT 'global'")
+    _ccols = {r["name"] for r in _c.execute("PRAGMA table_info(clients)").fetchall()}
+    if "room" not in _ccols:
+        _c.execute("ALTER TABLE clients ADD COLUMN room TEXT NOT NULL DEFAULT 'global'")
 
 # --- auth token (persists across restarts) ---
 _TOKEN_FILE = os.path.join(_DIR, "token")
@@ -98,18 +105,20 @@ class SendRequest(BaseModel):
     text: str = ""
     to: Optional[str] = None  # None = broadcast
     image: Optional[str] = None  # optional data URL ("data:image/...;base64,...")
+    room: str = "global"  # project group (invite code); 'global' = shared bus
 
 
-def _ensure_client(c, name: str):
-    """Register presence. New clients start at the current log tail so they
-    don't replay history that predates them."""
+def _ensure_client(c, name: str, room: str = "global"):
+    """Register presence and keep the session's room current. New clients start
+    at the current log tail so they don't replay history that predates them."""
     row = c.execute("SELECT name FROM clients WHERE name=?", (name,)).fetchone()
     if row:
-        c.execute("UPDATE clients SET last_seen=? WHERE name=?", (time.time(), name))
+        c.execute("UPDATE clients SET last_seen=?, room=? WHERE name=?",
+                  (time.time(), room, name))
     else:
         tail = c.execute("SELECT COALESCE(MAX(id),0) m FROM messages").fetchone()["m"]
-        c.execute("INSERT INTO clients(name, cursor, last_seen) VALUES(?,?,?)",
-                  (name, tail, time.time()))
+        c.execute("INSERT INTO clients(name, cursor, room, last_seen) VALUES(?,?,?,?)",
+                  (name, tail, room, time.time()))
 
 
 @app.get("/health")
@@ -118,10 +127,10 @@ def health():
 
 
 @app.post("/register")
-def register(name: str):
+def register(name: str, room: str = "global"):
     with _lock, _conn() as c:
-        _ensure_client(c, name)
-    return {"ok": True, "name": name}
+        _ensure_client(c, name, room)
+    return {"ok": True, "name": name, "room": room}
 
 
 @app.post("/unregister")
@@ -146,7 +155,7 @@ def _stale_watch():
         try:
             now = time.time()
             with _lock, _conn() as c:
-                rows = c.execute("SELECT name, last_seen FROM clients").fetchall()
+                rows = c.execute("SELECT name, room, last_seen FROM clients").fetchall()
                 for r in rows:
                     age = now - r["last_seen"]
                     if age > PRUNE_AFTER:
@@ -156,11 +165,11 @@ def _stale_watch():
                     if age > STALE_AFTER and r["name"] not in alerted:
                         alerted.add(r["name"])
                         c.execute(
-                            "INSERT INTO messages(sender, recipient, text, ts) VALUES(?,?,?,?)",
+                            "INSERT INTO messages(sender, recipient, text, room, ts) VALUES(?,?,?,?,?)",
                             ("bus-server", None,
                              f"PRESENCE ALERT: [{r['name']}] appears deaf — no bus poll for {int(age)}s. "
                              f"Its queued messages will wait; someone with terminal access may need to nudge it.",
-                             now))
+                             r["room"], now))
                     elif age <= STALE_AFTER:
                         alerted.discard(r["name"])
         except Exception:
@@ -171,15 +180,23 @@ threading.Thread(target=_stale_watch, daemon=True).start()
 
 
 @app.get("/who")
-def who():
+def who(room: str = "global"):
+    """List sessions in a room. room='*' returns every session across all rooms
+    (used for globally-unique name allocation when a new session joins)."""
     now = time.time()
+    all_rooms = room == "*"
     with _lock, _conn() as c:
-        rows = c.execute("SELECT name, cursor, last_seen FROM clients ORDER BY name").fetchall()
+        if all_rooms:
+            rows = c.execute("SELECT name, cursor, room, last_seen FROM clients ORDER BY name").fetchall()
+        else:
+            rows = c.execute("SELECT name, cursor, room, last_seen FROM clients WHERE room=? ORDER BY name",
+                             (room,)).fetchall()
         pend, presence = {}, {}
         for r in rows:
             n = c.execute(
-                "SELECT COUNT(*) n FROM messages WHERE id>? AND (recipient=? OR (recipient IS NULL AND sender!=?))",
-                (r["cursor"], r["name"], r["name"])).fetchone()["n"]
+                "SELECT COUNT(*) n FROM messages WHERE id>? AND room=? "
+                "AND (recipient=? OR (recipient IS NULL AND sender!=?))",
+                (r["cursor"], r["room"], r["name"], r["name"])).fetchone()["n"]
             pend[r["name"]] = n
             age = int(now - r["last_seen"])
             presence[r["name"]] = {"last_seen_secs_ago": age, "stale": age > STALE_AFTER}
@@ -187,9 +204,10 @@ def who():
 
 
 @app.get("/history")
-def history():
+def history(room: str = "global"):
     with _lock, _conn() as c:
-        rows = c.execute("SELECT sender, recipient, text, image, ts FROM messages ORDER BY id").fetchall()
+        rows = c.execute("SELECT sender, recipient, text, image, ts FROM messages "
+                         "WHERE room=? ORDER BY id", (room,)).fetchall()
         return {"messages": [
             {"from": r["sender"], "to": r["recipient"], "text": r["text"], "image": r["image"], "ts": r["ts"]}
             for r in rows]}
@@ -203,23 +221,24 @@ def send(req: SendRequest):
     if req.image and len(req.image) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="Image exceeds 2MB limit")
     with _lock, _conn() as c:
-        c.execute("INSERT INTO messages(sender, recipient, text, image, ts) VALUES(?,?,?,?,?)",
-                  (req.sender, req.to, req.text, req.image, time.time()))
-    return {"ok": True, "delivered_to": req.to or "broadcast"}
+        c.execute("INSERT INTO messages(sender, recipient, text, image, room, ts) VALUES(?,?,?,?,?,?)",
+                  (req.sender, req.to, req.text, req.image, req.room, time.time()))
+    return {"ok": True, "delivered_to": req.to or "broadcast", "room": req.room}
 
 
 @app.get("/recv")
-def recv(name: str, timeout: int = 25):
+def recv(name: str, timeout: int = 25, room: str = "global"):
     deadline = time.time() + min(timeout, 55)
     with _lock, _conn() as c:
-        _ensure_client(c, name)
+        _ensure_client(c, name, room)
     while True:
         with _lock, _conn() as c:
-            cur = c.execute("SELECT cursor FROM clients WHERE name=?", (name,)).fetchone()["cursor"]
+            row = c.execute("SELECT cursor, room FROM clients WHERE name=?", (name,)).fetchone()
+            cur, croom = row["cursor"], row["room"]
             rows = c.execute(
                 "SELECT id, sender, recipient, text, image, ts FROM messages "
-                "WHERE id>? AND (recipient=? OR (recipient IS NULL AND sender!=?)) ORDER BY id",
-                (cur, name, name)).fetchall()
+                "WHERE id>? AND room=? AND (recipient=? OR (recipient IS NULL AND sender!=?)) ORDER BY id",
+                (cur, croom, name, name)).fetchall()
             if rows:
                 c.execute("UPDATE clients SET cursor=?, last_seen=? WHERE name=?",
                           (rows[-1]["id"], time.time(), name))

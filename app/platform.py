@@ -374,6 +374,58 @@ def get_messages(pid: int, since_id: int = 0, user=Depends(current_user)):
         conn.close()
 
 
+# ---------- Per-project bus group (join command) ----------
+
+RAW_JOIN_URL = (
+    "https://raw.githubusercontent.com/koushikmaji31/claude-remote-worker/main/join-bus.sh"
+)
+
+
+def _bus_public_url() -> str:
+    """Public URL of the chat bus. env BUS_PUBLIC_URL > ngrok :8899 tunnel > localhost."""
+    env = os.environ.get("BUS_PUBLIC_URL")
+    if env:
+        return env.rstrip("/")
+    try:
+        import json
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=1) as r:
+            tunnels = json.load(r).get("tunnels", [])
+        for t in tunnels:
+            addr = str(t.get("config", {}).get("addr", ""))
+            if addr.endswith(":8899") and t.get("public_url", "").startswith("https"):
+                return t["public_url"]
+    except Exception:
+        pass
+    return "http://127.0.0.1:8899"
+
+
+def _bus_token() -> str:
+    try:
+        with open("/tmp/claude-bus/token") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+@app.get("/api/projects/{pid}/bus")
+def project_bus(pid: int, user=Depends(current_user)):
+    """Return the one-command join for this project's Claude group. The bus room
+    is the project's invite code, so joining scopes a Claude session to this group."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        row = conn.execute("SELECT invite_code FROM projects WHERE id=?", (pid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Project not found")
+        room = row["invite_code"]
+        url, token = _bus_public_url(), _bus_token()
+        command = f"curl -sL {RAW_JOIN_URL} | bash -s -- {url} {token} {room}"
+        return {"bus_url": url, "room": room, "token": token, "command": command}
+    finally:
+        conn.close()
+
+
 # ---------- Agent RPC ----------
 
 def _git(repo_path: str, *args: str) -> str:
