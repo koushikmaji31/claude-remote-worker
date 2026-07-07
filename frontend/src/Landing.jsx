@@ -213,7 +213,12 @@ export default function Landing() {
               ['Instant invites', 'Share one link and your teammates are in.'],
             ].map(([t, d]) => (
               <div className="ag-feature" key={t}>
-                <span className="check">✓</span>
+                <span className="check" aria-hidden>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                </span>
                 <div>
                   <div className="ag-feature-t">{t}</div>
                   <div className="ag-feature-d">{d}</div>
