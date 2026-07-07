@@ -118,22 +118,25 @@ function TopNav({ authed, user, onLogout }) {
           <div className="brand-mark">TC</div>
           <span className="ag-wordmark">Team&nbsp;Collab</span>
         </div>
-        <div className="ag-nav-links">
-          <a href="#features">Product</a>
-          <a href="#loved">Teams</a>
-          <a href="#testimonials">Stories</a>
-        </div>
-        <div className="row" style={{ gap: 'var(--sp-4)' }}>
+        {!authed && (
+          <div className="ag-nav-links">
+            <a href="#features">Product</a>
+            <a href="#loved">Teams</a>
+            <a href="#testimonials">Stories</a>
+          </div>
+        )}
+        <div className="row" style={{ gap: 'var(--sp-3)' }}>
           <ThemeToggle />
           {authed && user ? (
             <>
-              <div className="row" style={{ gap: 8 }}>
+              <div className="nav-user">
                 <div className="avatar">{initials(user.name)}</div>
+                <span className="nav-user-name">{user.name}</span>
               </div>
               <button className="btn ghost sm" onClick={onLogout}>Logout</button>
             </>
           ) : (
-            <a className="btn pill sm" href="#get-started">+ Get started</a>
+            <a className="btn pill sm" href="#get-started">Get started</a>
           )}
         </div>
       </div>
@@ -259,60 +262,56 @@ export default function Landing() {
         )}
 
         {authed && (
-          <>
-            {error && <div className="alert error">{error}</div>}
-            <div className="ag-dash-head">
+          <div className="dash">
+            <div className="dash-head">
               <div>
-                <h1 style={{ fontSize: 30 }}>Welcome back{user ? `, ${user.name.split(' ')[0]}` : ''}</h1>
-                <p className="muted">Your projects and teams</p>
+                <h1 className="dash-title">Projects</h1>
+                <p className="muted" style={{ margin: '4px 0 0' }}>
+                  {user ? `${user.name.split(' ')[0]}'s workspaces` : 'Your workspaces'}
+                </p>
               </div>
-            </div>
-
-            <div className="card flush">
-              <div className="card-head">
-                <h2 style={{ margin: 0 }}>My projects</h2>
-                <span className="badge">{projects.length}</span>
-              </div>
-              <div className="card-body">
-                {loading && (
-                  <div className="stack-3">
-                    {[0, 1].map((i) => <div key={i} className="skeleton" style={{ height: 44 }} />)}
-                  </div>
-                )}
-                {!loading && projects.length === 0 && (
-                  <p className="muted">No projects yet — create your first one below.</p>
-                )}
-                {!loading && projects.length > 0 && (
-                  <ul className="plain">
-                    {projects.map((p) => (
-                      <li key={p.project_id} className="row spread project-row"
-                          onClick={() => navigate(`/project/${p.project_id}`)}>
-                        <span className="row">
-                          <div className="avatar" style={{ background: 'var(--brand-600)' }}>
-                            {initials(p.name)}
-                          </div>
-                          <span>
-                            <span style={{ fontWeight: 600 }}>{p.name}</span>{' '}
-                            <span className={`badge ${p.role}`}>{p.role}</span>
-                          </span>
-                        </span>
-                        <span className="faint">admin {p.admin_name} · {p.member_count} member(s)</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-
-            <div className="card">
-              <h2>Create a project</h2>
-              <form onSubmit={createProject} className="row" style={{ gap: 8 }}>
-                <input className="grow" placeholder="Project name" value={newName}
-                       onChange={(e) => setNewName(e.target.value)} required style={{ width: 'auto' }} />
-                <button className="btn pill" type="submit">+ Create</button>
+              <form onSubmit={createProject} className="dash-create">
+                <input placeholder="New project name" value={newName}
+                       onChange={(e) => setNewName(e.target.value)} required />
+                <button className="btn" type="submit">Create</button>
               </form>
             </div>
-          </>
+
+            {error && <div className="alert error">{error}</div>}
+
+            {loading && (
+              <div className="proj-grid">
+                {[0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 116, borderRadius: 'var(--r-lg)' }} />)}
+              </div>
+            )}
+
+            {!loading && projects.length === 0 && (
+              <div className="empty">
+                <div className="empty-title">No projects yet</div>
+                <div className="muted">Create your first workspace using the field above.</div>
+              </div>
+            )}
+
+            {!loading && projects.length > 0 && (
+              <div className="proj-grid">
+                {projects.map((p) => (
+                  <button key={p.project_id} className="proj-card"
+                          onClick={() => navigate(`/project/${p.project_id}`)}>
+                    <div className="proj-card-top">
+                      <span className="avatar" aria-hidden>{initials(p.name)}</span>
+                      <span className={`badge ${p.role}`}>{p.role}</span>
+                    </div>
+                    <div className="proj-name">{p.name}</div>
+                    <div className="proj-meta">
+                      <span>{p.member_count} member{p.member_count === 1 ? '' : 's'}</span>
+                      <span className="proj-dot" aria-hidden />
+                      <span className="proj-admin">{p.admin_name}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>
