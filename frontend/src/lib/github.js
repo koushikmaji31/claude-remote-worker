@@ -19,3 +19,9 @@ export const linkRepo = (pid, fullName) =>
 
 export const unlinkRepo = (pid) =>
   api(`/api/projects/${pid}/github/link`, { method: 'DELETE' })
+
+// --- Read (Phase 2): live repo data ---
+export const ghBranches = (pid) => api(`/api/projects/${pid}/github/branches`)
+export const ghPulls = (pid) => api(`/api/projects/${pid}/github/pulls`)
+export const ghIssues = (pid) => api(`/api/projects/${pid}/github/issues`)
+export const ghPullDetail = (pid, number) => api(`/api/projects/${pid}/github/pulls/${number}`)

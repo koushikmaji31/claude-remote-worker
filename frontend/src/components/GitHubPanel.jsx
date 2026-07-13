@@ -6,7 +6,171 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   githubStatus, githubConnect, githubDisconnect,
   getRepoLink, linkRepo, unlinkRepo,
+  ghBranches, ghPulls, ghIssues, ghPullDetail,
 } from '../lib/github'
+
+// Class a unified-diff line so styles.css (.git-diff .add/.del/.hunk) colorizes it.
+function diffLineClass(line) {
+  if (line.startsWith('@@')) return 'hunk'
+  if (line.startsWith('+') && !line.startsWith('+++')) return 'add'
+  if (line.startsWith('-') && !line.startsWith('---')) return 'del'
+  return ''
+}
+
+function DiffPatch({ patch }) {
+  if (!patch) return <p className="faint" style={{ margin: '4px 0 0' }}>(no textual diff)</p>
+  return (
+    <pre className="git-diff" aria-label="file diff">
+      {patch.split('\n').map((line, i) => (
+        <span key={i} className={diffLineClass(line)}>{line + '\n'}</span>
+      ))}
+    </pre>
+  )
+}
+
+const REPO_TABS = [
+  { id: 'branches', label: 'Branches' },
+  { id: 'pulls', label: 'Pull Requests' },
+  { id: 'issues', label: 'Issues' },
+]
+
+function GitHubRepoData({ pid }) {
+  const [tab, setTab] = useState('branches')
+  const [cache, setCache] = useState({}) // { branches: [...], pulls: [...], issues: [...] }
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [openPr, setOpenPr] = useState(null) // number
+  const [prDetail, setPrDetail] = useState(null)
+
+  const load = useCallback(async (which) => {
+    if (cache[which]) return
+    setLoading(true); setError('')
+    try {
+      const fn = which === 'branches' ? ghBranches : which === 'pulls' ? ghPulls : ghIssues
+      const d = await fn(pid)
+      setCache((c) => ({ ...c, [which]: d[which] }))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [pid, cache])
+
+  useEffect(() => { load(tab) }, [tab, load])
+
+  async function togglePr(number) {
+    if (openPr === number) { setOpenPr(null); setPrDetail(null); return }
+    setOpenPr(number); setPrDetail(null); setError('')
+    try {
+      setPrDetail(await ghPullDetail(pid, number))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const rows = cache[tab]
+
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <h2>Repository</h2>
+        <div className="gh-tabs">
+          {REPO_TABS.map((t) => (
+            <button key={t.id} className={`gh-tab ${tab === t.id ? 'on' : ''}`} onClick={() => setTab(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </header>
+      <div className="panel-body">
+        {error && <div className="alert error">{error}</div>}
+        {loading && !rows && <div className="skeleton" style={{ height: 60 }} />}
+        {rows && rows.length === 0 && <p className="muted" style={{ margin: 0 }}>Nothing open here.</p>}
+
+        {tab === 'branches' && rows && (
+          <ul className="gh-list">
+            {rows.map((b) => (
+              <li key={b.name} className="gh-item">
+                <span className="mono">{b.name}</span>
+                <span className="row">
+                  {b.protected && <span className="badge">protected</span>}
+                  <span className="faint mono">{b.sha.slice(0, 7)}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {tab === 'pulls' && rows && (
+          <ul className="gh-list">
+            {rows.map((p) => (
+              <li key={p.number} className="gh-item gh-item-btn" onClick={() => togglePr(p.number)}>
+                <div className="gh-item-main">
+                  <span className="gh-num">#{p.number}</span> {p.title}
+                  {p.draft && <span className="badge">draft</span>}
+                  <div className="faint mono">{p.head} → {p.base} · @{p.user}</div>
+                  {openPr === p.number && (
+                    <div className="gh-pr-detail" onClick={(e) => e.stopPropagation()}>
+                      {!prDetail && <div className="skeleton" style={{ height: 40 }} />}
+                      {prDetail && prDetail.number === p.number && (
+                        <>
+                          <div className="row" style={{ marginBottom: 8 }}>
+                            <MergeBadge state={prDetail.mergeable_state} mergeable={prDetail.mergeable} />
+                            <span className="faint">
+                              +{prDetail.additions} −{prDetail.deletions} · {prDetail.changed_files} files
+                            </span>
+                            <a className="link" href={prDetail.html_url} target="_blank" rel="noreferrer">open on GitHub</a>
+                          </div>
+                          {prDetail.files.map((f) => (
+                            <details key={f.filename} className="gh-file">
+                              <summary>
+                                <span className="mono">{f.filename}</span>
+                                <span className="faint mono"> +{f.additions} −{f.deletions}</span>
+                              </summary>
+                              <DiffPatch patch={f.patch} />
+                            </details>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {tab === 'issues' && rows && (
+          <ul className="gh-list">
+            {rows.map((i) => (
+              <li key={i.number} className="gh-item">
+                <div className="gh-item-main">
+                  <a className="gh-issue-link" href={i.html_url} target="_blank" rel="noreferrer">
+                    <span className="gh-num">#{i.number}</span> {i.title}
+                  </a>
+                  <div className="faint">
+                    @{i.user}{i.comments ? ` · ${i.comments} comments` : ''}
+                    {i.labels.length > 0 && ' · '}
+                    {i.labels.map((l) => <span key={l} className="badge">{l}</span>)}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function MergeBadge({ state, mergeable }) {
+  // mergeable_state: clean/dirty/blocked/behind/unstable/unknown; mergeable: true/false/null
+  const clean = mergeable === true && (state === 'clean' || state === 'unstable')
+  const conflict = state === 'dirty' || mergeable === false
+  const cls = clean ? 'success' : conflict ? 'danger' : 'admin'
+  const label = conflict ? 'conflicts' : clean ? 'mergeable' : (state || 'checking…')
+  return <span className={`badge ${cls} dot`}>{label}</span>
+}
 
 export default function GitHubPanel({ pid, isAdmin }) {
   const [status, setStatus] = useState(null) // null = loading
@@ -157,6 +321,9 @@ export default function GitHubPanel({ pid, isAdmin }) {
           )}
         </div>
       </section>
+
+      {/* --- Live repo data (Phase 2) --- */}
+      {repo?.linked && <GitHubRepoData pid={pid} />}
     </div>
   )
 }

@@ -665,6 +665,159 @@ def github_unlink_repo(pid: int, user=Depends(current_user)):
         conn.close()
 
 
+# ---------- GitHub integration (Phase 2: read) ----------
+
+# Tiny in-process TTL cache so polling the UI doesn't burn the GitHub rate limit.
+_GH_CACHE: dict = {}
+_GH_CACHE_TTL = 25.0  # seconds
+
+
+def _cache_get(key):
+    hit = _GH_CACHE.get(key)
+    if hit and (time.time() - hit[0]) < _GH_CACHE_TTL:
+        return hit[1]
+    return None
+
+
+def _cache_put(key, value):
+    _GH_CACHE[key] = (time.time(), value)
+
+
+def _project_repo(conn, pid: int):
+    row = _repo_link_row(conn, pid)
+    if not row:
+        raise HTTPException(400, "No GitHub repo linked to this project")
+    return row["owner"], row["repo"], row["linked_by"]
+
+
+def _project_gh_token(conn, pid: int, requester_id: int) -> str:
+    """Token used for project reads: the repo-linker's, else the requester's own."""
+    _, _, linked_by = _project_repo(conn, pid)
+    for uid in (linked_by, requester_id):
+        if uid is None:
+            continue
+        row = conn.execute(
+            "SELECT token_enc FROM gh_identities WHERE user_id=?", (uid,)
+        ).fetchone()
+        if row:
+            return _unseal(row["token_enc"])
+    raise HTTPException(400, "No GitHub token available for this repo; an admin must reconnect GitHub")
+
+
+def _gh_read(token: str, path: str, params: str = ""):
+    """GET the GitHub API, mapping auth/rate-limit/not-found to HTTP errors. Returns (data, ratelimit)."""
+    try:
+        status, data, headers = _gh_api(token, "GET", path + params)
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach GitHub: {e}")
+    remaining = headers.get("X-RateLimit-Remaining")
+    if status == 401:
+        raise HTTPException(401, "GitHub token invalid or expired")
+    if status == 403 and remaining == "0":
+        raise HTTPException(429, "GitHub API rate limit exceeded; try again shortly")
+    if status == 404:
+        raise HTTPException(404, "Not found on GitHub (check repo access / token scope)")
+    if status >= 400:
+        raise HTTPException(400, f"GitHub error ({status}): {data.get('message', 'unknown') if isinstance(data, dict) else 'unknown'}")
+    ratelimit = {
+        "remaining": remaining,
+        "limit": headers.get("X-RateLimit-Limit"),
+        "reset": headers.get("X-RateLimit-Reset"),
+    }
+    return data, ratelimit
+
+
+def _gh_project_read(conn, pid, user_id, path, params="", cache_key=None):
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+    owner, repo, _ = _project_repo(conn, pid)
+    token = _project_gh_token(conn, pid, user_id)
+    data, ratelimit = _gh_read(token, f"/repos/{owner}/{repo}{path}", params)
+    result = (data, ratelimit, owner, repo)
+    if cache_key:
+        _cache_put(cache_key, result)
+    return result
+
+
+@app.get("/api/projects/{pid}/github/branches")
+def github_branches(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        data, rl, owner, repo = _gh_project_read(
+            conn, pid, user["id"], "/branches", "?per_page=100", cache_key=("branches", pid)
+        )
+        branches = [{"name": b["name"], "sha": b["commit"]["sha"], "protected": b.get("protected", False)} for b in data]
+        return {"repo": f"{owner}/{repo}", "branches": branches, "ratelimit": rl}
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects/{pid}/github/pulls")
+def github_pulls(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        data, rl, owner, repo = _gh_project_read(
+            conn, pid, user["id"], "/pulls", "?state=open&per_page=50&sort=updated&direction=desc",
+            cache_key=("pulls", pid),
+        )
+        pulls = [{
+            "number": p["number"], "title": p["title"], "user": p["user"]["login"],
+            "head": p["head"]["ref"], "base": p["base"]["ref"], "draft": p.get("draft", False),
+            "updated_at": p["updated_at"], "html_url": p["html_url"],
+        } for p in data]
+        return {"repo": f"{owner}/{repo}", "pulls": pulls, "ratelimit": rl}
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects/{pid}/github/issues")
+def github_issues(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        data, rl, owner, repo = _gh_project_read(
+            conn, pid, user["id"], "/issues", "?state=open&per_page=50&sort=updated&direction=desc",
+            cache_key=("issues", pid),
+        )
+        # The issues endpoint also returns PRs; filter those out.
+        issues = [{
+            "number": i["number"], "title": i["title"], "user": i["user"]["login"],
+            "comments": i.get("comments", 0), "labels": [l["name"] for l in i.get("labels", [])],
+            "updated_at": i["updated_at"], "html_url": i["html_url"],
+        } for i in data if "pull_request" not in i]
+        return {"repo": f"{owner}/{repo}", "issues": issues, "ratelimit": rl}
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects/{pid}/github/pulls/{number}")
+def github_pull_detail(pid: int, number: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        detail, rl, owner, repo = _gh_project_read(conn, pid, user["id"], f"/pulls/{number}")
+        files, _rl2, _o, _r = _gh_project_read(conn, pid, user["id"], f"/pulls/{number}/files", "?per_page=100")
+        return {
+            "repo": f"{owner}/{repo}",
+            "number": detail["number"], "title": detail["title"], "state": detail["state"],
+            "user": detail["user"]["login"], "head": detail["head"]["ref"], "base": detail["base"]["ref"],
+            "mergeable": detail.get("mergeable"), "mergeable_state": detail.get("mergeable_state"),
+            "additions": detail.get("additions"), "deletions": detail.get("deletions"),
+            "changed_files": detail.get("changed_files"), "html_url": detail["html_url"],
+            "files": [{
+                "filename": f["filename"], "status": f["status"],
+                "additions": f["additions"], "deletions": f["deletions"], "patch": f.get("patch", ""),
+            } for f in files],
+            "ratelimit": rl,
+        }
+    finally:
+        conn.close()
+
+
 # ---------- Agent RPC ----------
 
 def _git(repo_path: str, *args: str) -> str:
