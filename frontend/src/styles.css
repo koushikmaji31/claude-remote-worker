@@ -687,3 +687,43 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 /* Smooth anchor scrolling for the marketing nav, offset for the sticky bar */
 html { scroll-behavior: smooth; }
 .ag-features, .ag-loved, .ag-testimonials, .ag-auth { scroll-margin-top: 72px; }
+
+/* ---------- GitHub integration panel (owner: acer_1) ---------- */
+.alert.warn { background: var(--warning-soft); color: var(--warning); }
+.gh-row { display: flex; gap: var(--sp-2); align-items: stretch; }
+.gh-row input { flex: 1; }
+.gh-connected {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.gh-login { font-weight: 650; font-size: 14px; color: var(--text); text-decoration: none; }
+a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
+.gh-warn { margin-bottom: var(--sp-3); }
+.gh-warn code { font-size: 11.5px; }
+.badge.danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+
+/* Phase 2: live repo data (tabs + lists + PR detail) */
+.gh-tabs { display: flex; gap: 2px; padding: 3px; background: var(--surface-2); border-radius: var(--r-md); }
+.gh-tab {
+  padding: 5px 12px; border: none; border-radius: var(--r-sm); cursor: pointer;
+  background: transparent; color: var(--text-muted); font: inherit; font-size: 13px; font-weight: 550;
+  transition: background 0.12s, color 0.12s;
+}
+.gh-tab.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
+.gh-list { list-style: none; padding: 0; margin: 0; }
+.gh-item {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3);
+  padding: var(--sp-3) 0; border-bottom: 1px solid var(--border);
+}
+.gh-item:last-child { border-bottom: none; }
+.gh-item-btn { cursor: pointer; }
+.gh-item-btn:hover { background: var(--surface-2); }
+.gh-item-main { flex: 1; min-width: 0; font-size: 14px; }
+.gh-num { color: var(--text-faint); font-family: var(--mono); font-size: 12.5px; }
+.gh-issue-link { color: var(--text); text-decoration: none; }
+.gh-issue-link:hover { color: var(--brand-600); }
+.gh-pr-detail { margin-top: var(--sp-3); padding-top: var(--sp-3); border-top: 1px dashed var(--border); }
+.gh-file { margin: var(--sp-2) 0; }
+.gh-file summary { cursor: pointer; font-size: 13px; padding: 4px 0; }
+.gh-file .git-diff { margin-top: var(--sp-2); }
