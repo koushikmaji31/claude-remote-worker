@@ -15,6 +15,38 @@ from pydantic import BaseModel
 
 DB_PATH = Path(__file__).resolve().parent.parent / "platform.db"
 
+# ---------- Secret sealing for stored GitHub tokens ----------
+# Tokens are encrypted at rest with Fernet when TOKEN_ENCRYPTION_KEY is set.
+# Without a key we fall back to plaintext (dev only) and flag it via /api/github/status
+# so the UI can warn. Generate a key: python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+_ENC_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY", "").strip()
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+
+    _FERNET = Fernet(_ENC_KEY.encode()) if _ENC_KEY else None
+except Exception:  # cryptography missing or bad key -> degrade to plaintext
+    _FERNET, InvalidToken = None, Exception
+
+TOKENS_ENCRYPTED = _FERNET is not None
+
+
+def _seal(secret: str) -> str:
+    """Encrypt a secret for storage. Prefix marks the scheme so _unseal is unambiguous."""
+    if _FERNET:
+        return "enc:" + _FERNET.encrypt(secret.encode()).decode()
+    return "plain:" + secret
+
+
+def _unseal(stored: str) -> str:
+    if stored.startswith("enc:"):
+        if not _FERNET:
+            raise RuntimeError("Token was encrypted but TOKEN_ENCRYPTION_KEY is not set")
+        return _FERNET.decrypt(stored[4:].encode()).decode()
+    if stored.startswith("plain:"):
+        return stored[6:]
+    return stored  # legacy/unprefixed
+
+
 app = FastAPI(title="Team Collab Platform")
 app.add_middleware(
     CORSMiddleware,
@@ -63,6 +95,26 @@ def init_db():
             text TEXT NOT NULL,
             image TEXT,
             ts REAL NOT NULL
+        );
+        -- GitHub identity: one linked GitHub account per platform user (Phase 1, PAT-based).
+        -- token_enc is sealed at rest (see _seal/_unseal). auth_kind future-proofs OAuth/App.
+        CREATE TABLE IF NOT EXISTS gh_identities(
+            user_id INTEGER PRIMARY KEY REFERENCES users(id),
+            gh_login TEXT NOT NULL,
+            gh_id INTEGER,
+            token_enc TEXT NOT NULL,
+            auth_kind TEXT NOT NULL DEFAULT 'pat',
+            scopes TEXT,
+            connected_at REAL NOT NULL
+        );
+        -- Repo link: map a project to a GitHub repo. One repo per project (Phase 1).
+        CREATE TABLE IF NOT EXISTS repo_links(
+            project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+            owner TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            default_branch TEXT,
+            linked_by INTEGER REFERENCES users(id),
+            linked_at REAL NOT NULL
         );
         """
     )
@@ -422,6 +474,193 @@ def project_bus(pid: int, user=Depends(current_user)):
         url, token = _bus_public_url(), _bus_token()
         command = f"curl -sL {RAW_JOIN_URL} | bash -s -- {url} {token} {room}"
         return {"bus_url": url, "room": room, "token": token, "command": command}
+    finally:
+        conn.close()
+
+
+# ---------- GitHub integration (Phase 1: identity + repo link) ----------
+
+GH_API = "https://api.github.com"
+
+
+def _gh_api(token: str, method: str, path: str, body=None, timeout: int = 15):
+    """Call the GitHub REST API with a user token. Returns (status, json, headers)."""
+    import requests
+
+    url = path if path.startswith("http") else f"{GH_API}{path}"
+    resp = requests.request(
+        method,
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        json=body,
+        timeout=timeout,
+    )
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    return resp.status_code, data, resp.headers
+
+
+def _user_gh_token(conn, user_id: int) -> str:
+    row = conn.execute(
+        "SELECT token_enc FROM gh_identities WHERE user_id=?", (user_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(400, "GitHub not connected")
+    return _unseal(row["token_enc"])
+
+
+class GitHubConnectIn(BaseModel):
+    token: str
+
+
+@app.post("/api/github/connect")
+def github_connect(body: GitHubConnectIn, user=Depends(current_user)):
+    """Validate a personal access token against GitHub and store it (sealed)."""
+    token = body.token.strip()
+    if not token:
+        raise HTTPException(400, "Token required")
+    try:
+        status, data, headers = _gh_api(token, "GET", "/user")
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach GitHub: {e}")
+    if status == 401:
+        raise HTTPException(401, "GitHub rejected the token (invalid or expired)")
+    if status != 200:
+        raise HTTPException(400, f"GitHub error ({status}): {data.get('message', 'unknown')}")
+    scopes = headers.get("X-OAuth-Scopes", "")
+    conn = db()
+    try:
+        conn.execute(
+            """INSERT INTO gh_identities(user_id, gh_login, gh_id, token_enc, auth_kind, scopes, connected_at)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 gh_login=excluded.gh_login, gh_id=excluded.gh_id, token_enc=excluded.token_enc,
+                 auth_kind=excluded.auth_kind, scopes=excluded.scopes, connected_at=excluded.connected_at""",
+            (user["id"], data["login"], data.get("id"), _seal(token), "pat", scopes, time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"connected": True, "login": data["login"], "scopes": scopes, "encrypted": TOKENS_ENCRYPTED}
+
+
+@app.get("/api/github/status")
+def github_status(user=Depends(current_user)):
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT gh_login, scopes, connected_at FROM gh_identities WHERE user_id=?", (user["id"],)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"connected": False, "encrypted": TOKENS_ENCRYPTED}
+    return {
+        "connected": True,
+        "login": row["gh_login"],
+        "scopes": row["scopes"],
+        "connected_at": row["connected_at"],
+        "encrypted": TOKENS_ENCRYPTED,
+    }
+
+
+@app.delete("/api/github/disconnect")
+def github_disconnect(user=Depends(current_user)):
+    conn = db()
+    try:
+        conn.execute("DELETE FROM gh_identities WHERE user_id=?", (user["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"connected": False, "encrypted": TOKENS_ENCRYPTED}
+
+
+class RepoLinkIn(BaseModel):
+    owner: str = ""
+    repo: str = ""
+    full_name: str = ""  # convenience: "owner/repo" instead of owner+repo
+
+
+def _repo_link_row(conn, pid: int):
+    return conn.execute("SELECT * FROM repo_links WHERE project_id=?", (pid,)).fetchone()
+
+
+@app.post("/api/projects/{pid}/github/link")
+def github_link_repo(pid: int, body: RepoLinkIn, user=Depends(current_user)):
+    """Admin links a GitHub repo to the project; validated against the admin's GitHub token."""
+    conn = db()
+    try:
+        require_admin(conn, pid, user["id"])
+        owner, repo = body.owner.strip(), body.repo.strip()
+        if body.full_name.strip() and "/" in body.full_name:
+            owner, repo = body.full_name.strip().split("/", 1)
+        if not owner or not repo:
+            raise HTTPException(400, "owner and repo are required")
+        token = _user_gh_token(conn, user["id"])
+        try:
+            status, data, _ = _gh_api(token, "GET", f"/repos/{owner}/{repo}")
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach GitHub: {e}")
+        if status == 404:
+            raise HTTPException(404, f"Repo {owner}/{repo} not found or not accessible with your token")
+        if status != 200:
+            raise HTTPException(400, f"GitHub error ({status}): {data.get('message', 'unknown')}")
+        conn.execute(
+            """INSERT INTO repo_links(project_id, owner, repo, default_branch, linked_by, linked_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(project_id) DO UPDATE SET
+                 owner=excluded.owner, repo=excluded.repo, default_branch=excluded.default_branch,
+                 linked_by=excluded.linked_by, linked_at=excluded.linked_at""",
+            (pid, data["owner"]["login"], data["name"], data.get("default_branch"), user["id"], time.time()),
+        )
+        conn.commit()
+        return {
+            "linked": True,
+            "owner": data["owner"]["login"],
+            "repo": data["name"],
+            "full_name": data["full_name"],
+            "default_branch": data.get("default_branch"),
+            "private": data.get("private"),
+            "html_url": data.get("html_url"),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects/{pid}/github")
+def github_get_link(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        row = _repo_link_row(conn, pid)
+        if not row:
+            return {"linked": False}
+        return {
+            "linked": True,
+            "owner": row["owner"],
+            "repo": row["repo"],
+            "full_name": f"{row['owner']}/{row['repo']}",
+            "default_branch": row["default_branch"],
+            "linked_at": row["linked_at"],
+        }
+    finally:
+        conn.close()
+
+
+@app.delete("/api/projects/{pid}/github/link")
+def github_unlink_repo(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_admin(conn, pid, user["id"])
+        conn.execute("DELETE FROM repo_links WHERE project_id=?", (pid,))
+        conn.commit()
+        return {"linked": False}
     finally:
         conn.close()
 

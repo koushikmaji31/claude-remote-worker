@@ -4,6 +4,7 @@ import { api, getToken, getUser } from './api.js'
 import ThemeToggle from './ui/ThemeToggle.jsx'
 import GitPanel from './components/GitPanel.jsx'
 import ChatPanel from './components/ChatPanel.jsx'
+import GitHubPanel from './components/GitHubPanel.jsx'
 
 function initials(name) {
   return (name || '?')
@@ -18,6 +19,7 @@ const NAV = [
   { id: 'overview', label: 'Overview' },
   { id: 'discussion', label: 'Discussion' },
   { id: 'branches', label: 'Branches' },
+  { id: 'github', label: 'GitHub' },
   { id: 'members', label: 'Members' },
 ]
 
@@ -26,6 +28,7 @@ function NavIcon({ id }) {
   if (id === 'overview') return <svg {...common}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
   if (id === 'discussion') return <svg {...common}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
   if (id === 'branches') return <svg {...common}><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7M8.5 6H14a4 4 0 0 1 4 4v.5M18 10.5V13" /></svg>
+  if (id === 'github') return <svg {...common}><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12 12 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21" /></svg>
   return <svg {...common}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /></svg>
 }
 
@@ -219,6 +222,8 @@ export default function Project() {
           {view === 'discussion' && <ChatPanel pid={pid} me={me} />}
 
           {view === 'branches' && <GitPanel />}
+
+          {view === 'github' && <GitHubPanel pid={pid} isAdmin={isAdmin} />}
 
           {view === 'members' && (
             <Section title="Members" action={<span className="tag">{memberCount}</span>}>
