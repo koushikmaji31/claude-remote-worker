@@ -1,13 +1,15 @@
-// GitHub integration panel (Phase 1: identity + repo link).
-// - Connect a personal access token (validated server-side against GitHub).
+// GitHub integration panel.
+// - Connect via GitHub OAuth (preferred) or a personal access token (fallback).
 // - Link the project to a GitHub repo (admin only).
+// - Live repo views: branch graph, branches, PRs, issues.
 // Uses shared design-system classes; GitHub-specific bits are in styles.css (.gh-*).
 import { useEffect, useState, useCallback } from 'react'
 import {
-  githubStatus, githubConnect, githubDisconnect,
+  githubStatus, githubConnect, githubDisconnect, ghOAuthStart,
   getRepoLink, linkRepo, unlinkRepo,
   ghBranches, ghPulls, ghIssues, ghPullDetail,
 } from '../lib/github'
+import BranchGraph from './BranchGraph.jsx'
 
 // Class a unified-diff line so styles.css (.git-diff .add/.del/.hunk) colorizes it.
 function diffLineClass(line) {
@@ -29,13 +31,14 @@ function DiffPatch({ patch }) {
 }
 
 const REPO_TABS = [
+  { id: 'graph', label: 'Branch graph' },
   { id: 'branches', label: 'Branches' },
   { id: 'pulls', label: 'Pull Requests' },
   { id: 'issues', label: 'Issues' },
 ]
 
 function GitHubRepoData({ pid }) {
-  const [tab, setTab] = useState('branches')
+  const [tab, setTab] = useState('graph')
   const [cache, setCache] = useState({}) // { branches: [...], pulls: [...], issues: [...] }
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -43,7 +46,7 @@ function GitHubRepoData({ pid }) {
   const [prDetail, setPrDetail] = useState(null)
 
   const load = useCallback(async (which) => {
-    if (cache[which]) return
+    if (which === 'graph' || cache[which]) return // graph fetches its own data
     setLoading(true); setError('')
     try {
       const fn = which === 'branches' ? ghBranches : which === 'pulls' ? ghPulls : ghIssues
@@ -84,8 +87,10 @@ function GitHubRepoData({ pid }) {
       </header>
       <div className="panel-body">
         {error && <div className="alert error">{error}</div>}
-        {loading && !rows && <div className="skeleton" style={{ height: 60 }} />}
-        {rows && rows.length === 0 && <p className="muted" style={{ margin: 0 }}>Nothing open here.</p>}
+        {tab !== 'graph' && loading && !rows && <div className="skeleton" style={{ height: 60 }} />}
+        {tab !== 'graph' && rows && rows.length === 0 && <p className="muted" style={{ margin: 0 }}>Nothing open here.</p>}
+
+        {tab === 'graph' && <BranchGraph pid={pid} />}
 
         {tab === 'branches' && rows && (
           <ul className="gh-list">
@@ -172,6 +177,20 @@ function MergeBadge({ state, mergeable }) {
   return <span className={`badge ${cls} dot`}>{label}</span>
 }
 
+// Pull the ?github=connected|error result the OAuth callback appended, then
+// scrub it from the URL so refreshes don't re-show the banner.
+function consumeOAuthResult() {
+  const params = new URLSearchParams(window.location.search)
+  const result = params.get('github')
+  if (!result) return null
+  const reason = params.get('github_reason') || ''
+  params.delete('github')
+  params.delete('github_reason')
+  const qs = params.toString()
+  window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''))
+  return { result, reason }
+}
+
 export default function GitHubPanel({ pid, isAdmin }) {
   const [status, setStatus] = useState(null) // null = loading
   const [repo, setRepo] = useState(null)
@@ -179,6 +198,7 @@ export default function GitHubPanel({ pid, isAdmin }) {
   const [fullName, setFullName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [banner, setBanner] = useState(null) // {result, reason} from the OAuth callback
 
   const refresh = useCallback(async () => {
     setError('')
@@ -191,7 +211,13 @@ export default function GitHubPanel({ pid, isAdmin }) {
     }
   }, [pid])
 
+  useEffect(() => { setBanner(consumeOAuthResult()) }, [])
   useEffect(() => { refresh() }, [refresh])
+
+  const oauthLogin = () => run(async () => {
+    const { authorize_url } = await ghOAuthStart(`/project/${pid}?tab=branches`)
+    window.location.href = authorize_url // leaves the app; GitHub redirects back here
+  })
 
   async function run(fn) {
     setBusy(true); setError('')
@@ -213,6 +239,12 @@ export default function GitHubPanel({ pid, isAdmin }) {
 
   return (
     <div className="stack-4">
+      {banner?.result === 'connected' && (
+        <div className="alert success">GitHub account connected.</div>
+      )}
+      {banner?.result === 'error' && (
+        <div className="alert error">GitHub sign-in failed{banner.reason ? `: ${banner.reason}` : ''}.</div>
+      )}
       {error && <div className="alert error">{error}</div>}
 
       {/* --- Identity --- */}
@@ -226,28 +258,61 @@ export default function GitHubPanel({ pid, isAdmin }) {
 
           {status && !status.connected && (
             <>
-              <p className="muted" style={{ marginTop: 0 }}>
-                Paste a GitHub personal access token to connect your account. Use a
-                fine-grained token with read access to the repos you want to link.
-              </p>
               {!status.encrypted && (
                 <div className="alert warn gh-warn">
                   Tokens are stored <strong>unencrypted</strong> — set <code>TOKEN_ENCRYPTION_KEY</code>
                   {' '}on the server to encrypt them at rest.
                 </div>
               )}
-              <div className="gh-row">
-                <input
-                  type="password"
-                  placeholder="ghp_… or github_pat_…"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  autoComplete="off"
-                />
-                <button className="btn" onClick={connect} disabled={busy || !token.trim()}>
-                  {busy ? 'Connecting…' : 'Connect'}
-                </button>
-              </div>
+
+              {status.oauth_available ? (
+                <>
+                  <p className="muted" style={{ marginTop: 0 }}>
+                    Sign in with GitHub to connect your account — no tokens to copy around.
+                  </p>
+                  <button className="btn gh-oauth-btn" onClick={oauthLogin} disabled={busy}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                      <path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.91c.58.1.79-.25.79-.55v-2.17c-3.2.7-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.75 2.69 1.25 3.34.95.1-.74.4-1.25.72-1.53-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .96-.31 3.16 1.18a11 11 0 0 1 5.76 0c2.2-1.49 3.16-1.18 3.16-1.18.62 1.59.23 2.76.11 3.05.73.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.38-5.25 5.67.41.35.77 1.04.77 2.1v3.12c0 .3.2.66.8.55A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z" />
+                    </svg>
+                    {busy ? 'Redirecting…' : 'Continue with GitHub'}
+                  </button>
+                  <details className="gh-pat-fallback">
+                    <summary className="faint">Use a personal access token instead</summary>
+                    <div className="gh-row" style={{ marginTop: 8 }}>
+                      <input
+                        type="password"
+                        placeholder="ghp_… or github_pat_…"
+                        value={token}
+                        onChange={(e) => setToken(e.target.value)}
+                        autoComplete="off"
+                      />
+                      <button className="btn" onClick={connect} disabled={busy || !token.trim()}>
+                        {busy ? 'Connecting…' : 'Connect'}
+                      </button>
+                    </div>
+                  </details>
+                </>
+              ) : (
+                <>
+                  <p className="muted" style={{ marginTop: 0 }}>
+                    GitHub sign-in isn't configured on this server (set <code>GITHUB_CLIENT_ID</code> and
+                    {' '}<code>GITHUB_CLIENT_SECRET</code>). Meanwhile you can paste a fine-grained personal
+                    access token with read access to the repos you want to link.
+                  </p>
+                  <div className="gh-row">
+                    <input
+                      type="password"
+                      placeholder="ghp_… or github_pat_…"
+                      value={token}
+                      onChange={(e) => setToken(e.target.value)}
+                      autoComplete="off"
+                    />
+                    <button className="btn" onClick={connect} disabled={busy || !token.trim()}>
+                      {busy ? 'Connecting…' : 'Connect'}
+                    </button>
+                  </div>
+                </>
+              )}
             </>
           )}
 
@@ -256,7 +321,8 @@ export default function GitHubPanel({ pid, isAdmin }) {
               <div>
                 <div className="gh-login">@{status.login}</div>
                 <div className="faint">
-                  {status.scopes ? `scopes: ${status.scopes}` : 'fine-grained token'}
+                  {status.auth_kind === 'oauth' ? 'signed in with GitHub' : 'personal access token'}
+                  {status.scopes ? ` · scopes: ${status.scopes}` : ''}
                   {' · '}{status.encrypted ? 'encrypted at rest' : 'stored unencrypted'}
                 </div>
               </div>

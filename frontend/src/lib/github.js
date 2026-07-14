@@ -5,6 +5,13 @@ import { api } from '../api'
 // --- Identity (per-user GitHub account) ---
 export const githubStatus = () => api('/api/github/status')
 
+// --- OAuth (Phase 3): preferred over PATs ---
+export const ghOAuthConfig = () => api('/api/github/oauth/config')
+
+// Returns { authorize_url }; caller navigates the browser there.
+export const ghOAuthStart = (returnTo) =>
+  api('/api/github/oauth/start', { method: 'POST', body: { return_to: returnTo } })
+
 export const githubConnect = (token) =>
   api('/api/github/connect', { method: 'POST', body: { token } })
 
@@ -25,3 +32,6 @@ export const ghBranches = (pid) => api(`/api/projects/${pid}/github/branches`)
 export const ghPulls = (pid) => api(`/api/projects/${pid}/github/pulls`)
 export const ghIssues = (pid) => api(`/api/projects/${pid}/github/issues`)
 export const ghPullDetail = (pid, number) => api(`/api/projects/${pid}/github/pulls/${number}`)
+
+// --- Branch-history graph (Phase 3) ---
+export const ghGraph = (pid) => api(`/api/projects/${pid}/github/graph`)

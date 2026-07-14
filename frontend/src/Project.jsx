@@ -1,10 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useNavigate, useParams, Link } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { api, getToken, getUser } from './api.js'
 import ThemeToggle from './ui/ThemeToggle.jsx'
-import GitPanel from './components/GitPanel.jsx'
 import ChatPanel from './components/ChatPanel.jsx'
 import GitHubPanel from './components/GitHubPanel.jsx'
+import OverviewDashboard from './components/OverviewDashboard.jsx'
 
 function initials(name) {
   return (name || '?')
@@ -18,8 +18,7 @@ function initials(name) {
 const NAV = [
   { id: 'overview', label: 'Overview' },
   { id: 'discussion', label: 'Discussion' },
-  { id: 'branches', label: 'Branches' },
-  { id: 'github', label: 'GitHub' },
+  { id: 'branches', label: 'Branches' }, // GitHub-backed (graph, PRs, issues)
   { id: 'members', label: 'Members' },
 ]
 
@@ -28,7 +27,6 @@ function NavIcon({ id }) {
   if (id === 'overview') return <svg {...common}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
   if (id === 'discussion') return <svg {...common}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
   if (id === 'branches') return <svg {...common}><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7M8.5 6H14a4 4 0 0 1 4 4v.5M18 10.5V13" /></svg>
-  if (id === 'github') return <svg {...common}><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12 12 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21" /></svg>
   return <svg {...common}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /></svg>
 }
 
@@ -44,41 +42,46 @@ function Section({ title, action, children }) {
   )
 }
 
+// Pill-shaped one-liner with a copy button; the full text lives in state so the
+// visible ellipsis never truncates what gets copied.
+function CopyBox({ text }) {
+  const [copied, setCopied] = useState(false)
+  function copy() {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <div className="ov-cmd">
+      <code title={text}>{text}</code>
+      <button className="btn sm" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+    </div>
+  )
+}
+
 function GroupJoinPanel({ pid }) {
   const [info, setInfo] = useState(null)
   const [error, setError] = useState('')
-  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     api(`/api/projects/${pid}/bus`).then(setInfo).catch((err) => setError(err.message))
   }, [pid])
 
-  function copy() {
-    if (!info) return
-    navigator.clipboard.writeText(info.command).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
-  }
-
   return (
-    <Section
-      title="Connect a Claude session"
-      action={<span className="tag">bus · this group</span>}
-    >
-      <p className="muted" style={{ marginTop: 0 }}>
-        Run this in your project repo, then start <code>claude</code>. That window joins
-        this group only — it talks to the other Claude sessions here and no one else.
+    <div className="ov-panel">
+      <div className="ov-panel-title-row">
+        <div className="ov-panel-head">Connect a Claude session</div>
+        <span className="ov-pill">bus · this group</span>
+      </div>
+      <p className="muted" style={{ margin: 0 }}>
+        Run this in your project repo, then start <code>claude</code>. That window joins this
+        workspace only{info?.name ? <> — its agents show up as <code>{info.name}_1</code>, <code>{info.name}_2</code>…</> : '.'}
       </p>
       {error && <div className="alert error">Could not load join command: {error}</div>}
-      {!info && !error && <div className="skeleton" style={{ height: 46 }} />}
-      {info && (
-        <div className="cmd-row">
-          <code className="cmd-box">{info.command}</code>
-          <button className="btn sm" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-        </div>
-      )}
-    </Section>
+      {!info && !error && <div className="skeleton" style={{ height: 40, marginTop: 10, borderRadius: 999 }} />}
+      {info && <CopyBox text={info.command} />}
+    </div>
   )
 }
 
@@ -89,7 +92,11 @@ export default function Project() {
   const [project, setProject] = useState(null)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
-  const [view, setView] = useState('overview')
+  // ?tab= lets external flows (e.g. the GitHub OAuth callback) deep-link a section.
+  const [searchParams] = useSearchParams()
+  const rawTab = searchParams.get('tab')
+  const tabParam = rawTab === 'github' ? 'branches' : rawTab // old deep-links still land right
+  const [view, setView] = useState(NAV.some((n) => n.id === tabParam) ? tabParam : 'overview')
 
   useEffect(() => {
     if (!getToken()) navigate('/')
@@ -201,29 +208,28 @@ export default function Project() {
 
           {view === 'overview' && (
             <div className="stack-4">
-              <div className="stat-row">
-                <div className="stat"><div className="stat-n">{memberCount}</div><div className="stat-l">Members</div></div>
-                <div className="stat"><div className="stat-n">{isAdmin ? 'Admin' : 'Member'}</div><div className="stat-l">Your role</div></div>
-                <div className="stat"><div className="stat-n mono">{project.invite_code.slice(0, 8)}</div><div className="stat-l">Group id</div></div>
-              </div>
-              <GroupJoinPanel pid={pid} />
-              {isAdmin && (
-                <Section title="Invite teammates">
-                  <p className="muted" style={{ marginTop: 0 }}>Share this link so others can join the workspace.</p>
-                  <div className="cmd-row">
-                    <code className="cmd-box">{window.location.origin}/?join={project.invite_code}</code>
-                    <button className="btn sm" onClick={copyInvite}>{copied ? 'Copied' : 'Copy'}</button>
+              <OverviewDashboard pid={pid} project={project} />
+              <div className="ov-join-grid">
+                <GroupJoinPanel pid={pid} />
+                {isAdmin && (
+                  <div className="ov-panel">
+                    <div className="ov-panel-title-row">
+                      <div className="ov-panel-head">Invite teammates</div>
+                      <span className="ov-pill lime">{memberCount} member{memberCount === 1 ? '' : 's'}</span>
+                    </div>
+                    <p className="muted" style={{ margin: 0 }}>
+                      Share this link — anyone who opens it joins the workspace.
+                    </p>
+                    <CopyBox text={`${window.location.origin}/?join=${project.invite_code}`} />
                   </div>
-                </Section>
-              )}
+                )}
+              </div>
             </div>
           )}
 
           {view === 'discussion' && <ChatPanel pid={pid} me={me} />}
 
-          {view === 'branches' && <GitPanel />}
-
-          {view === 'github' && <GitHubPanel pid={pid} isAdmin={isAdmin} />}
+          {view === 'branches' && <GitHubPanel pid={pid} isAdmin={isAdmin} />}
 
           {view === 'members' && (
             <Section title="Members" action={<span className="tag">{memberCount}</span>}>

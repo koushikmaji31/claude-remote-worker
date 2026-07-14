@@ -14,7 +14,10 @@
 #    jobhunt server that also uses :8787 on this machine.
 #  - PUBLIC_BASE_URL / BUS_PUBLIC_URL are exported so invite links and the
 #    per-project "join this Claude group" command render real https URLs.
+#  - GitHub "Sign in with GitHub": put GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET
+#    in .env (OAuth App callback URL: $PUBLIC_BASE_URL/api/github/oauth/callback).
 #  - Override anything: DOMAIN=example.com bash start_server.sh
+#  - Local only (no Cloudflare Tunnel): NO_TUNNEL=1 bash start_server.sh
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,9 +35,16 @@ APP_PORT="${APP_PORT:-8900}"
 BUS_PORT="${BUS_PORT:-8899}"
 WORKER_PORT="${WORKER_PORT:-8788}"
 CF_CONFIG="$HOME/.cloudflared/config.yml"
+NO_TUNNEL="${NO_TUNNEL:-0}"
 
-export PUBLIC_BASE_URL="https://$DOMAIN"
-export BUS_PUBLIC_URL="https://$BUS_HOST"
+if [[ "$NO_TUNNEL" == "1" ]]; then
+  # Local-only run: invite links, OAuth callbacks, and bus joins point at localhost.
+  export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://127.0.0.1:$APP_PORT}"
+  export BUS_PUBLIC_URL="${BUS_PUBLIC_URL:-http://127.0.0.1:$BUS_PORT}"
+else
+  export PUBLIC_BASE_URL="https://$DOMAIN"
+  export BUS_PUBLIC_URL="https://$BUS_HOST"
+fi
 
 say()  { printf '\033[1;36m>> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!! %s\033[0m\n' "$*"; }
@@ -93,7 +103,9 @@ else
 fi
 
 # --- 6. Cloudflare Tunnel -----------------------------------------------------
-if ! command -v cloudflared >/dev/null 2>&1; then
+if [[ "$NO_TUNNEL" == "1" ]]; then
+  say "NO_TUNNEL=1 — skipping Cloudflare Tunnel (local only)."
+elif ! command -v cloudflared >/dev/null 2>&1; then
   warn "cloudflared not installed (brew install cloudflared) — local only at http://127.0.0.1:$APP_PORT"
 else
   # Write the ingress config so the tunnel points at THIS app. Backed up once.
@@ -146,8 +158,13 @@ fi
 
 echo
 printf '\033[1;32m==============================================================\033[0m\n'
-printf '\033[1;32m  Website:  https://%s\033[0m\n' "$DOMAIN"
-printf '\033[1;32m  Bus:      https://%s\033[0m\n' "$BUS_HOST"
+if [[ "$NO_TUNNEL" == "1" ]]; then
+  printf '\033[1;32m  Website:  %s\033[0m\n' "$PUBLIC_BASE_URL"
+  printf '\033[1;32m  Bus:      %s\033[0m\n' "$BUS_PUBLIC_URL"
+else
+  printf '\033[1;32m  Website:  https://%s\033[0m\n' "$DOMAIN"
+  printf '\033[1;32m  Bus:      https://%s\033[0m\n' "$BUS_HOST"
+fi
 printf '\033[1;32m==============================================================\033[0m\n'
 echo
 say "Local: app :$APP_PORT  bus :$BUS_PORT  worker :$WORKER_PORT (jobhunt's :8787 untouched)"

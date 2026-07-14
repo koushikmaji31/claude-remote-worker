@@ -8,9 +8,10 @@
 # Then just run `claude` in the repo (approve hooks + MCP once) and say hi.
 
 set -e
-BUS_URL=${1:?usage: join-bus.sh <BUS_URL> <BUS_TOKEN> [ROOM]}
-BUS_TOKEN=${2:?usage: join-bus.sh <BUS_URL> <BUS_TOKEN> [ROOM]}
+BUS_URL=${1:?usage: join-bus.sh <BUS_URL> <BUS_TOKEN> [ROOM] [NAME]}
+BUS_TOKEN=${2:?usage: join-bus.sh <BUS_URL> <BUS_TOKEN> [ROOM] [NAME]}
 BUS_ROOM=${3:-global}   # project group (invite code); 'global' = shared bus
+BUS_USER=${4:-}         # teammate name from the platform -> agent prefix (koushik_1, ...)
 KIT_TARBALL="https://github.com/koushikmaji31/claude-remote-worker/archive/refs/heads/main.tar.gz"
 
 if [ ! -d .git ]; then
@@ -39,6 +40,7 @@ mkdir -p /tmp/claude-bus
 printf '%s' "${BUS_URL%/}" > /tmp/claude-bus/url
 printf '%s' "$BUS_TOKEN"   > /tmp/claude-bus/token
 printf '%s' "$BUS_ROOM"    > /tmp/claude-bus/room
+[ -n "$BUS_USER" ] && printf '%s' "$BUS_USER" > /tmp/claude-bus/user
 
 ok=$(curl -s -m 10 -H "Authorization: Bearer $BUS_TOKEN" "${BUS_URL%/}/health" || true)
 if [ "$ok" = '{"ok":true}' ]; then

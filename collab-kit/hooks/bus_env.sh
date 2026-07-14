@@ -34,6 +34,17 @@ else
   BUS_ROOM=global
 fi
 
+# Agent name prefix for this teammate ("koushik" -> koushik_1, koushik_2 ...).
+# env CLAUDE_BUS_USER > file /tmp/claude-bus/user (written by join-bus.sh from
+# the platform account name) > empty (bus_join falls back to the OS account).
+if [ -n "$CLAUDE_BUS_USER" ]; then
+  BUS_USER=$CLAUDE_BUS_USER
+elif [ -s /tmp/claude-bus/user ]; then
+  BUS_USER=$(cat /tmp/claude-bus/user)
+else
+  BUS_USER=""
+fi
+
 bus_is_local() {
   case "$BUS_URL" in
     http://127.0.0.1:*|http://localhost:*|http://127.0.0.1|http://localhost) return 0 ;;

@@ -27,10 +27,11 @@ elif [ -s "$namefile" ]; then
 else
   # Derive a per-machine base name and append the lowest free number,
   # e.g. koushik_1, koushik_2 (or shantanu_1 on another machine).
-  # Base = CLAUDE_BUS_USER if set, else the account's first name (from the
-  # OS full name, e.g. "Koushik Maji" -> koushik), else the login name with
+  # Base = the teammate's platform name (BUS_USER: env CLAUDE_BUS_USER or
+  # /tmp/claude-bus/user, written at join time by join-bus.sh), else the
+  # account's first name from the OS full name, else the login name with
   # trailing digits stripped. Falls back to "agent".
-  base=${CLAUDE_BUS_USER:-}
+  base=${BUS_USER:-}
   if [ -z "$base" ]; then
     fullname=$(id -F 2>/dev/null)          # macOS real name, e.g. "Koushik Maji"
     base=${fullname%% *}                    # first token -> "Koushik"

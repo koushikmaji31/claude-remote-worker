@@ -206,4 +206,21 @@ PUBLIC_BASE_URL=...               # already used by platform.py; needed for call
 
 ---
 
+## 9. Shipped so far
+
+- **Phase 1 — identity + repo link** (PAT): `gh_identities`, `repo_links`, sealed tokens.
+- **Phase 2 — live reads**: branches / PRs (+diff detail) / issues, TTL-cached.
+- **Phase 3 — OAuth + branch graph** (2026-07-14, koushikmaji_1):
+  - `GET /api/github/oauth/config`, `POST /api/github/oauth/start`,
+    `GET /api/github/oauth/callback` — OAuth-App code flow, single-use `gh_oauth_states`
+    rows (15-min TTL), open-redirect guard, tokens stored `auth_kind='oauth'`.
+    Needs `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` in `.env`; callback URL is
+    `<PUBLIC_BASE_URL>/api/github/oauth/callback`. PAT connect remains the fallback.
+  - `GET /api/projects/{pid}/github/graph` — commit DAG across the 12 most relevant
+    branches (30 commits each, deduped, default-branch-first attribution) + open PRs,
+    60s cache. Rendered by `frontend/src/components/BranchGraph.jsx` as colored lanes
+    (validated palette, both themes) on the GitHub tab's "Branch graph" view.
+
+---
+
 *Document owner: acer_1. Companion to the platform docs; update as phases land.*

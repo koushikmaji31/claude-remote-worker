@@ -579,7 +579,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 .crumb { font-size: 12px; color: var(--text-faint); font-weight: 500; }
 .main-head h1 { font-size: 22px; font-weight: 680; letter-spacing: -0.02em; margin-top: 2px; }
 .main-actions { display: flex; gap: var(--sp-2); }
-.main-body { padding: var(--sp-6); max-width: 960px; width: 100%; }
+.main-body { padding: var(--sp-6); max-width: 1400px; width: 100%; margin: 0 auto; }
 
 /* ---------- Panels (replace heavy cards) ---------- */
 .panel {
@@ -727,3 +727,306 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .gh-file { margin: var(--sp-2) 0; }
 .gh-file summary { cursor: pointer; font-size: 13px; padding: 4px 0; }
 .gh-file .git-diff { margin-top: var(--sp-2); }
+
+/* Phase 3: GitHub OAuth + branch-history graph */
+.gh-oauth-btn { display: inline-flex; align-items: center; gap: 8px; }
+.gh-pat-fallback { margin-top: var(--sp-3); }
+.gh-pat-fallback summary { cursor: pointer; font-size: 13px; }
+
+/* Lane palette for the commit DAG — categorical slots validated (dataviz) for
+   each theme's panel surface. Dark is the default theme; light overrides. */
+:root, :root[data-theme='dark'] {
+  --lane-1: #3987e5; --lane-2: #199e70; --lane-3: #c98500; --lane-4: #008300;
+  --lane-5: #9085e9; --lane-6: #e66767; --lane-7: #d55181; --lane-8: #d95926;
+}
+:root[data-theme='light'] {
+  --lane-1: #2a78d6; --lane-2: #1baf7a; --lane-3: #eda100; --lane-4: #008300;
+  --lane-5: #4a3aa7; --lane-6: #e34948; --lane-7: #e87ba4; --lane-8: #eb6834;
+}
+
+.gh-graph-wrap { min-width: 0; }
+.gh-graph-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 10px; margin-bottom: var(--sp-3);
+  padding-bottom: var(--sp-3); border-bottom: 1px solid var(--border);
+}
+.gh-lane-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text); white-space: nowrap;
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface-2);
+}
+.gh-lane-chip .mono { font-size: 11.5px; }
+.gh-lane-chip .faint { font-size: 10.5px; }
+.gh-lane-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--lane, var(--text-faint));
+}
+.gh-lane-chip.tip {
+  border-color: color-mix(in srgb, var(--lane) 45%, transparent);
+  background: color-mix(in srgb, var(--lane) 10%, transparent);
+}
+.gh-pr-flag { font-size: 10.5px; color: var(--text-muted); font-family: var(--mono); }
+
+.gh-graph-scroll { overflow-x: auto; }
+.gh-graph { position: relative; display: flex; align-items: flex-start; min-width: fit-content; }
+.gh-graph-svg { flex-shrink: 0; display: block; }
+.gh-graph-rows { flex: 1; min-width: 340px; }
+.gh-graph-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 10px; border-radius: var(--r-sm);
+  color: var(--text); text-decoration: none; font-size: 13.5px;
+  white-space: nowrap;
+}
+.gh-graph-row.hover { background: var(--surface-2); }
+.gh-graph-msg { overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; min-width: 60px; }
+.gh-graph-when { margin-left: auto; }
+.gh-graph-tip {
+  position: absolute; z-index: 5; max-width: 420px;
+  padding: 8px 12px; border-radius: var(--r-md);
+  background: var(--bg-elevated); border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-md, 0 6px 24px rgba(0,0,0,0.25));
+  font-size: 12.5px; pointer-events: none;
+}
+.gh-graph-tip-msg { font-weight: 550; margin-bottom: 2px; white-space: normal; }
+
+/* Overview dashboard (.ov-*) — Superpower-style: dot-matrix numerals, gradient
+   hero cards, pill badges. Gradient + accent tokens per theme. */
+:root, :root[data-theme='dark'] {
+  --ov-lime: #d9f24f;
+  --ov-lime-ink: #1c2203;
+  /* Brand-orange family (deeper for the dark surface). Score runs hot
+     amber -> brand; sprint runs the other way so the two cards read apart. */
+  --ov-grad-score: linear-gradient(160deg, #c25612 0%, #92330a 70%, #6e2406 100%);
+  --ov-grad-sprint: linear-gradient(135deg, #8a5714 0%, #b34a10 60%, #7e2b08 100%);
+  --ov-chip-bg: rgba(28, 28, 32, 0.92);
+}
+:root[data-theme='light'] {
+  --ov-lime: #d9f24f;
+  --ov-lime-ink: #1c2203;
+  --ov-grad-score: linear-gradient(160deg, #ff9a52 0%, #ff5a1f 55%, #d63d0a 100%);
+  --ov-grad-sprint: linear-gradient(135deg, #ffb347 0%, #ff7a29 60%, #ef4e0d 100%);
+  --ov-chip-bg: rgba(255, 255, 255, 0.94);
+}
+
+.ov { display: flex; flex-direction: column; gap: var(--sp-4); min-width: 0; }
+.ov-num {
+  font-size: 26px; font-weight: 700; line-height: 1; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.ov-num.md { font-size: 32px; }
+.ov-num.hero { font-size: 76px; color: #fff; letter-spacing: -0.03em; }
+
+/* -- top stat strip -- */
+.ov-stats { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
+.ov-stat {
+  flex: 1 1 130px; min-width: 130px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
+  padding: 14px 16px;
+}
+.ov-stat-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; color: var(--text); }
+.ov-stat-label { margin-top: 8px; font-size: 12.5px; color: var(--text-muted); }
+.ov-pill {
+  font-size: 10.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+  background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.ov-pill.lime { background: var(--ov-lime); color: var(--ov-lime-ink); border-color: transparent; }
+.ov-pill.warn { background: var(--warning-soft); color: var(--warning); border-color: transparent; }
+.ov-sample {
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 999px; vertical-align: 2px;
+  background: var(--surface-2); color: var(--text-faint); border: 1px dashed var(--border-strong);
+}
+
+/* -- commit timeline -- */
+.ov-timeline {
+  position: relative; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; padding: 12px 26px 8px; overflow: visible;
+}
+.ov-timeline-track { display: flex; justify-content: space-between; gap: 8px; align-items: flex-end; min-height: 56px; }
+.ov-week { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 6px; }
+.ov-bar { display: block; width: 8px; border-radius: 4px; background: var(--text-faint); }
+.ov-bar.now { background: var(--brand-500); }
+.ov-bar.zero { background: var(--border); }
+.ov-week-label { font-size: 10.5px; color: var(--text-faint); height: 14px; }
+.ov-float-chip {
+  position: absolute; top: -14px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  background: var(--ov-chip-bg); border: 1px solid var(--border);
+  border-radius: 999px; padding: 8px 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+  backdrop-filter: blur(6px);
+}
+.ov-trend { font-size: 15px; color: var(--text); }
+.ov-chip-title { font-size: 13px; font-weight: 600; color: var(--text); }
+
+/* -- hero cards -- */
+.ov-hero { display: grid; grid-template-columns: 1.2fr 1.2fr 1fr; gap: var(--sp-3); }
+@media (max-width: 980px) { .ov-hero { grid-template-columns: 1fr; } }
+.ov-card {
+  position: relative; border-radius: 22px; padding: 22px 24px; min-height: 210px;
+  color: #fff; overflow: hidden; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; text-align: center; gap: 10px;
+}
+.ov-card.score { background: var(--ov-grad-score); }
+.ov-card.sprint { background: var(--ov-grad-sprint); }
+.ov-card-title { font-size: 13px; opacity: 0.85; }
+.ov-card-sub { font-size: 12.5px; opacity: 0.9; }
+.ov-card-sub .ov-sample { background: rgba(255,255,255,0.18); color: rgba(255,255,255,0.85); border-color: rgba(255,255,255,0.35); }
+.ov-card-deco { display: flex; gap: 4px; margin-top: 8px; }
+.ov-card-deco span { width: 4px; height: 4px; border-radius: 50%; background: #fff; }
+.ov-card-ruler { display: flex; gap: 6px; align-items: flex-end; margin-top: 10px; }
+.ov-card-ruler span { width: 2px; height: 10px; background: rgba(255,255,255,0.55); border-radius: 1px; }
+.ov-card-ruler span.mark { height: 18px; background: #fff; }
+
+.ov-side { display: flex; flex-direction: column; gap: var(--sp-3); }
+.ov-panel {
+  flex: 1; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 22px; padding: 16px 18px;
+}
+.ov-panel-head { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+.ov-panel-big { display: flex; align-items: flex-end; gap: 8px; color: var(--text); }
+.ov-unit { font-size: 12px; color: var(--text-muted); padding-bottom: 2px; white-space: nowrap; }
+.ov-progress {
+  height: 4px; border-radius: 2px; background: var(--surface-2); margin-top: 12px; overflow: hidden;
+}
+.ov-progress span { display: block; width: 22%; height: 100%; border-radius: 2px; background: var(--ov-lime); }
+
+/* -- engineering health tiles -- */
+.ov-section-head h3 { margin: 4px 0 2px; font-size: 17px; }
+.ov-section-head .faint { margin: 0; }
+.ov-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--sp-3); }
+.ov-tile {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; color: var(--text);
+}
+.ov-tile-head { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); }
+.ov-tile-head .ov-pill { margin-left: auto; }
+.ov-tile-icon {
+  width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center;
+  justify-content: center; background: var(--surface-2); font-size: 12px; color: var(--text);
+}
+.ov-tile-value { display: flex; align-items: flex-end; gap: 8px; }
+.ov-spark { width: 100%; height: 24px; color: var(--text-faint); }
+
+/* -- needs attention -- */
+.ov-attn { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ov-attn a {
+  display: flex; align-items: center; gap: 12px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+  padding: 10px 16px; color: var(--text); text-decoration: none; font-size: 13.5px;
+}
+.ov-attn a:hover { background: var(--surface-2); }
+.ov-attn-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-attn .faint { margin-left: auto; white-space: nowrap; }
+
+/* Dashboard loading & entrance: card shells render instantly; live values
+   shimmer in place, then fade up as each fetch resolves. */
+@keyframes ovIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ovPulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+.ov > * { animation: ovIn 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.ov > *:nth-child(2) { animation-delay: 0.05s; }
+.ov > *:nth-child(3) { animation-delay: 0.1s; }
+.ov > *:nth-child(4) { animation-delay: 0.15s; }
+.ov > *:nth-child(5) { animation-delay: 0.2s; }
+.ov > *:nth-child(6) { animation-delay: 0.25s; }
+.ov > *:nth-child(7) { animation-delay: 0.3s; }
+.ov > *:nth-child(8) { animation-delay: 0.35s; }
+.ov-in { animation: ovIn 0.4s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.ov-skel-num {
+  display: inline-block; width: 46px; height: 24px; border-radius: 7px;
+  background: var(--surface-2); animation: ovPulse 1.3s ease-in-out infinite;
+}
+.ov-bar.wait { background: var(--border); animation: ovPulse 1.3s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .ov > *, .ov-in, .ov-skel-num, .ov-bar.wait { animation: none; }
+}
+
+/* Overview join/invite panels — same card language as the dashboard. */
+.ov-join-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--sp-3); }
+.ov-panel-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ov-panel-title-row .ov-panel-head { margin-bottom: 0; }
+.ov-cmd {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px; min-width: 0;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 5px 5px 16px;
+}
+.ov-cmd code {
+  flex: 1; min-width: 0; background: none; padding: 0;
+  font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ov-cmd .btn { border-radius: 999px; flex-shrink: 0; }
+
+/* ---------- Liquid glass ----------
+   Frosted, translucent surfaces over a soft brand-orange ambient glow.
+   Cascade-level overrides: keep the structural rules above untouched. */
+:root, :root[data-theme='dark'] {
+  --glass: rgba(22, 22, 26, 0.55);
+  --glass-strong: rgba(14, 14, 17, 0.66);
+  --glass-border: rgba(255, 255, 255, 0.07);
+}
+:root[data-theme='light'] {
+  --glass: rgba(255, 255, 255, 0.52);
+  --glass-strong: rgba(255, 255, 255, 0.65);
+  --glass-border: rgba(12, 12, 14, 0.09);
+}
+
+/* Ambient glow the glass gets to blur — subtle, fixed, behind everything. */
+.app::before {
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(1000px 560px at 88% -10%, color-mix(in srgb, var(--brand-500) 20%, transparent), transparent 65%),
+    radial-gradient(800px 520px at -12% 45%, color-mix(in srgb, var(--brand-700) 13%, transparent), transparent 65%),
+    radial-gradient(700px 460px at 55% 115%, color-mix(in srgb, #ffb347 12%, transparent), transparent 65%);
+}
+
+/* Glassy cards: translucent tint over the ambient glow. Deliberately NO
+   backdrop-filter here — on filtered cards some renderers skip repainting
+   children that remount after load (bars, list rows). The fixed glow behind
+   the translucency carries the liquid look; real blur lives on the chrome
+   surfaces below, where content actually scrolls underneath. */
+.panel, .ov-stat, .ov-panel, .ov-tile, .ov-timeline, .ov-attn a, .stat {
+  background: var(--glass);
+  border-color: var(--glass-border);
+}
+.side {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border-right-color: var(--glass-border);
+}
+.main-head {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border-bottom-color: var(--glass-border);
+}
+.ov-float-chip {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+}
+
+/* Sidebar: same design language as the dashboard (pill nav, lime count). */
+.side-top, .side-foot { border-color: var(--glass-border); }
+.nav-item { border-radius: 999px; padding: 9px 14px; }
+.nav-item:hover { background: color-mix(in srgb, var(--surface-2) 65%, transparent); }
+.nav-item.on {
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--glass-border);
+}
+.nav-count {
+  background: var(--ov-lime); color: var(--ov-lime-ink);
+  border-color: transparent; font-weight: 650;
+}
+
+/* No backdrop-filter support -> blurred chrome would be see-through; go solid. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .side, .main-head, .ov-float-chip { background: var(--surface); }
+}

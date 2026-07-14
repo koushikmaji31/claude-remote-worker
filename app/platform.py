@@ -9,7 +9,7 @@ from typing import Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -115,6 +115,15 @@ def init_db():
             default_branch TEXT,
             linked_by INTEGER REFERENCES users(id),
             linked_at REAL NOT NULL
+        );
+        -- Pending GitHub OAuth handshakes (Phase 3). Single-use, short-lived:
+        -- the browser leaves for github.com without our bearer token, so the
+        -- state row is how the callback finds the platform user again.
+        CREATE TABLE IF NOT EXISTS gh_oauth_states(
+            state TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            return_to TEXT,
+            created_at REAL NOT NULL
         );
         """
     )
@@ -460,10 +469,23 @@ def _bus_token() -> str:
         return ""
 
 
+def _bus_base_name(display_name: str) -> str:
+    """Teammate display name -> agent name prefix, e.g. 'Koushik Maji' -> 'koushik'.
+    Mirrors the sanitizing in hooks/bus_join.sh (lowercase, alnum, cut at first digit)."""
+    import re
+
+    first = (display_name or "").strip().split()[0] if (display_name or "").strip() else ""
+    base = re.sub(r"[^a-z0-9_-]", "", first.lower())
+    base = re.split(r"[0-9]", base)[0]
+    return base or "agent"
+
+
 @app.get("/api/projects/{pid}/bus")
 def project_bus(pid: int, user=Depends(current_user)):
     """Return the one-command join for this project's Claude group. The bus room
-    is the project's invite code, so joining scopes a Claude session to this group."""
+    is the project's invite code, so joining scopes a Claude session to this group.
+    The teammate's platform name rides along so their agents are named after them
+    (koushik_1, koushik_2 ...) instead of after the local machine account."""
     conn = db()
     try:
         require_member(conn, pid, user["id"])
@@ -472,8 +494,9 @@ def project_bus(pid: int, user=Depends(current_user)):
             raise HTTPException(404, "Project not found")
         room = row["invite_code"]
         url, token = _bus_public_url(), _bus_token()
-        command = f"curl -sL {RAW_JOIN_URL} | bash -s -- {url} {token} {room}"
-        return {"bus_url": url, "room": room, "token": token, "command": command}
+        base = _bus_base_name(user["name"])
+        command = f"curl -sL {RAW_JOIN_URL} | bash -s -- {url} {token} {room} {base}"
+        return {"bus_url": url, "room": room, "token": token, "name": base, "command": command}
     finally:
         conn.close()
 
@@ -550,23 +573,157 @@ def github_connect(body: GitHubConnectIn, user=Depends(current_user)):
     return {"connected": True, "login": data["login"], "scopes": scopes, "encrypted": TOKENS_ENCRYPTED}
 
 
+# ---------- GitHub OAuth (Phase 3) ----------
+# Uses a GitHub OAuth App: set GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET (e.g. in .env)
+# and register the callback URL as  <PUBLIC_BASE_URL>/api/github/oauth/callback.
+# PAT connect above stays as a fallback for servers without an OAuth app.
+
+GH_OAUTH_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "").strip()
+GH_OAUTH_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
+GH_OAUTH_CONFIGURED = bool(GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET)
+GH_OAUTH_STATE_TTL = 15 * 60  # seconds a pending handshake stays valid
+
+
+def _public_base() -> str:
+    return os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8900").rstrip("/")
+
+
+def _oauth_redirect_uri() -> str:
+    return f"{_public_base()}/api/github/oauth/callback"
+
+
+@app.get("/api/github/oauth/config")
+def github_oauth_config():
+    """Let the UI know whether 'Sign in with GitHub' is available on this server."""
+    return {"configured": GH_OAUTH_CONFIGURED}
+
+
+class OAuthStartIn(BaseModel):
+    return_to: str = "/"  # SPA path to land on after the callback
+
+
+@app.post("/api/github/oauth/start")
+def github_oauth_start(body: OAuthStartIn, user=Depends(current_user)):
+    if not GH_OAUTH_CONFIGURED:
+        raise HTTPException(400, "GitHub OAuth is not configured (set GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)")
+    return_to = body.return_to
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = "/"
+    state = secrets.token_urlsafe(32)
+    conn = db()
+    try:
+        conn.execute(
+            "DELETE FROM gh_oauth_states WHERE created_at < ?", (time.time() - GH_OAUTH_STATE_TTL,)
+        )
+        conn.execute(
+            "INSERT INTO gh_oauth_states(state, user_id, return_to, created_at) VALUES(?,?,?,?)",
+            (state, user["id"], return_to, time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    from urllib.parse import urlencode
+
+    params = urlencode({
+        "client_id": GH_OAUTH_CLIENT_ID,
+        "redirect_uri": _oauth_redirect_uri(),
+        "scope": "repo read:org",
+        "state": state,
+    })
+    return {"authorize_url": f"https://github.com/login/oauth/authorize?{params}"}
+
+
+@app.get("/api/github/oauth/callback")
+def github_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """Browser lands here from github.com; no bearer token, so the state row is the auth."""
+    from urllib.parse import quote
+
+    def bounce(dest: str, status: str, reason: str = ""):
+        sep = "&" if "?" in dest else "?"
+        extra = f"&github_reason={quote(reason)}" if reason else ""
+        return RedirectResponse(f"{dest}{sep}github={status}{extra}", status_code=302)
+
+    conn = db()
+    try:
+        conn.execute(
+            "DELETE FROM gh_oauth_states WHERE created_at < ?", (time.time() - GH_OAUTH_STATE_TTL,)
+        )
+        row = conn.execute("SELECT * FROM gh_oauth_states WHERE state=?", (state,)).fetchone()
+        if row:  # single-use, consumed even if the exchange below fails
+            conn.execute("DELETE FROM gh_oauth_states WHERE state=?", (state,))
+        conn.commit()
+        if not row:
+            return bounce("/", "error", "Login link expired — try again")
+        return_to = row["return_to"] or "/"
+        if error:
+            return bounce(return_to, "error", error)
+        if not code:
+            return bounce(return_to, "error", "GitHub did not return a code")
+
+        import requests
+
+        try:
+            resp = requests.post(
+                "https://github.com/login/oauth/access_token",
+                data={
+                    "client_id": GH_OAUTH_CLIENT_ID,
+                    "client_secret": GH_OAUTH_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": _oauth_redirect_uri(),
+                },
+                headers={"Accept": "application/json"},
+                timeout=15,
+            )
+            payload = resp.json()
+        except Exception:
+            return bounce(return_to, "error", "Could not reach GitHub to exchange the code")
+        access_token = payload.get("access_token")
+        if not access_token:
+            return bounce(return_to, "error", payload.get("error_description") or "Token exchange failed")
+
+        try:
+            status_code, gh_user, _ = _gh_api(access_token, "GET", "/user")
+        except Exception:
+            return bounce(return_to, "error", "Could not fetch your GitHub profile")
+        if status_code != 200:
+            return bounce(return_to, "error", f"GitHub /user returned {status_code}")
+
+        conn.execute(
+            """INSERT INTO gh_identities(user_id, gh_login, gh_id, token_enc, auth_kind, scopes, connected_at)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 gh_login=excluded.gh_login, gh_id=excluded.gh_id, token_enc=excluded.token_enc,
+                 auth_kind=excluded.auth_kind, scopes=excluded.scopes, connected_at=excluded.connected_at""",
+            (
+                row["user_id"], gh_user["login"], gh_user.get("id"),
+                _seal(access_token), "oauth", payload.get("scope", ""), time.time(),
+            ),
+        )
+        conn.commit()
+        return bounce(return_to, "connected")
+    finally:
+        conn.close()
+
+
 @app.get("/api/github/status")
 def github_status(user=Depends(current_user)):
     conn = db()
     try:
         row = conn.execute(
-            "SELECT gh_login, scopes, connected_at FROM gh_identities WHERE user_id=?", (user["id"],)
+            "SELECT gh_login, scopes, auth_kind, connected_at FROM gh_identities WHERE user_id=?", (user["id"],)
         ).fetchone()
     finally:
         conn.close()
     if not row:
-        return {"connected": False, "encrypted": TOKENS_ENCRYPTED}
+        return {"connected": False, "encrypted": TOKENS_ENCRYPTED, "oauth_available": GH_OAUTH_CONFIGURED}
     return {
         "connected": True,
         "login": row["gh_login"],
         "scopes": row["scopes"],
+        "auth_kind": row["auth_kind"],
         "connected_at": row["connected_at"],
         "encrypted": TOKENS_ENCRYPTED,
+        "oauth_available": GH_OAUTH_CONFIGURED,
     }
 
 
@@ -674,13 +831,13 @@ _GH_CACHE_TTL = 25.0  # seconds
 
 def _cache_get(key):
     hit = _GH_CACHE.get(key)
-    if hit and (time.time() - hit[0]) < _GH_CACHE_TTL:
+    if hit and time.time() < hit[0]:
         return hit[1]
     return None
 
 
-def _cache_put(key, value):
-    _GH_CACHE[key] = (time.time(), value)
+def _cache_put(key, value, ttl: float = _GH_CACHE_TTL):
+    _GH_CACHE[key] = (time.time() + ttl, value)
 
 
 def _project_repo(conn, pid: int):
@@ -814,6 +971,81 @@ def github_pull_detail(pid: int, number: int, user=Depends(current_user)):
             } for f in files],
             "ratelimit": rl,
         }
+    finally:
+        conn.close()
+
+
+# Branch-history graph (Phase 3): commit DAG across recent branches, one payload
+# the UI can lay out as lanes. REST (not GraphQL) so fine-grained PATs keep working.
+GRAPH_MAX_BRANCHES = 12
+GRAPH_COMMITS_PER_BRANCH = 30
+GRAPH_CACHE_TTL = 60.0  # heavier than the list endpoints (1 call per branch)
+
+
+@app.get("/api/projects/{pid}/github/graph")
+def github_graph(pid: int, user=Depends(current_user)):
+    from urllib.parse import quote
+
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        cached = _cache_get(("graph", pid))
+        if cached is not None:
+            return cached
+        owner, repo, _ = _project_repo(conn, pid)
+        token = _project_gh_token(conn, pid, user["id"])
+        link = _repo_link_row(conn, pid)
+        default_branch = link["default_branch"]
+
+        branches_raw, rl = _gh_read(token, f"/repos/{owner}/{repo}/branches", "?per_page=100")
+        # Default branch first so shared history is attributed to it (its lane
+        # claims commits the feature branches merely contain).
+        branches_raw.sort(key=lambda b: (b["name"] != default_branch, b["name"].lower()))
+        truncated = len(branches_raw) > GRAPH_MAX_BRANCHES
+        branches_raw = branches_raw[:GRAPH_MAX_BRANCHES]
+
+        commits: dict = {}
+        for b in branches_raw:
+            data, rl = _gh_read(
+                token,
+                f"/repos/{owner}/{repo}/commits",
+                f"?sha={quote(b['name'], safe='')}&per_page={GRAPH_COMMITS_PER_BRANCH}",
+            )
+            for c in data:
+                if c["sha"] in commits:
+                    continue
+                meta = c["commit"]
+                commits[c["sha"]] = {
+                    "sha": c["sha"],
+                    "parents": [p["sha"] for p in c.get("parents", [])],
+                    "message": (meta.get("message") or "").split("\n", 1)[0][:140],
+                    "author": (c.get("author") or {}).get("login") or (meta.get("author") or {}).get("name") or "?",
+                    "date": (meta.get("committer") or meta.get("author") or {}).get("date"),
+                    "branch": b["name"],  # first branch (default first) whose history listed it
+                }
+        nodes = sorted(commits.values(), key=lambda n: n["date"] or "", reverse=True)
+
+        pulls_data, rl = _gh_read(token, f"/repos/{owner}/{repo}/pulls", "?state=open&per_page=50")
+        pulls = [{
+            "number": p["number"], "title": p["title"], "head": p["head"]["ref"],
+            "base": p["base"]["ref"], "draft": p.get("draft", False), "html_url": p["html_url"],
+        } for p in pulls_data]
+
+        result = {
+            "repo": f"{owner}/{repo}",
+            "default_branch": default_branch,
+            "branches": [
+                {"name": b["name"], "tip": b["commit"]["sha"], "protected": b.get("protected", False)}
+                for b in branches_raw
+            ],
+            "commits": nodes,
+            "pulls": pulls,
+            "truncated": truncated,
+            "commits_per_branch": GRAPH_COMMITS_PER_BRANCH,
+            "ratelimit": rl,
+        }
+        _cache_put(("graph", pid), result, ttl=GRAPH_CACHE_TTL)
+        return result
     finally:
         conn.close()
 
