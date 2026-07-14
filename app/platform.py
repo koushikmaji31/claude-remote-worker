@@ -5,7 +5,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1052,78 +1052,106 @@ def github_graph(pid: int, user=Depends(current_user)):
 
 # ---------- Agent RPC ----------
 
-def _git(repo_path: str, *args: str) -> str:
-    if not Path(repo_path).is_dir():
-        raise ValueError(f"repo_path not a directory: {repo_path}")
-    res = subprocess.run(
-        ["git", "-C", repo_path, *args], capture_output=True, text=True, timeout=30
-    )
-    if res.returncode != 0:
-        raise RuntimeError(res.stderr.strip() or f"git exited {res.returncode}")
-    return res.stdout
+# ---------- Merge-conflict prediction (exact, via a cached bare mirror) ----------
+# Answers "would merging head into base conflict?" BEFORE anyone merges, using
+# `git merge-tree` on a server-side bare mirror of the project's linked repo.
+# The repo is always derived from the project's repo_link — never from a
+# client-supplied path (the old /rpc git.* surface let any member read any
+# directory on this host; it is gone).
+
+REPO_CACHE = Path(__file__).resolve().parent.parent / ".repo-cache"
+_MIRROR_TIMEOUT = 180  # seconds; clone of a large repo can be slow on first use
 
 
-def rpc_git_branches(params):
-    out = _git(params["repo_path"], "branch", "--list")
-    branches, current = [], None
-    for line in out.splitlines():
-        name = line[2:].strip()
-        if line.startswith("* "):
-            current = name
-        branches.append(name)
-    return {"branches": branches, "current": current}
+def _run_git(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, text=True, timeout=timeout)
 
 
-def rpc_git_diff(params):
-    return {"diff": _git(params["repo_path"], "diff", params["base"], params["head"])}
+def _repo_mirror(owner: str, repo: str, token: str) -> Path:
+    """Bare mirror of the linked repo, cloned on first use and fetched thereafter.
+
+    The token is passed per-invocation and never written to .git/config, so a
+    revoked/rotated token can't linger on disk.
+    """
+    REPO_CACHE.mkdir(exist_ok=True)
+    path = REPO_CACHE / f"{owner}__{repo}.git"
+    auth_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
+    refspec = "+refs/heads/*:refs/heads/*"
+
+    if not (path / "HEAD").exists():
+        res = _run_git("clone", "--bare", auth_url, str(path), timeout=_MIRROR_TIMEOUT)
+        if res.returncode != 0:
+            raise HTTPException(502, "Could not clone the linked repo (check GitHub access)")
+        # Drop the tokenised remote so the secret isn't persisted.
+        _run_git("-C", str(path), "remote", "set-url", "origin",
+                 f"https://github.com/{owner}/{repo}.git")
+    else:
+        res = _run_git("-C", str(path), "fetch", "--prune", auth_url, refspec,
+                       timeout=_MIRROR_TIMEOUT)
+        if res.returncode != 0:
+            raise HTTPException(502, "Could not fetch the linked repo (check GitHub access)")
+    return path
 
 
-def rpc_git_conflicts(params):
-    repo, base, head = params["repo_path"], params["base"], params["head"]
-    res = subprocess.run(
-        ["git", "-C", repo, "merge-tree", "--write-tree", "--name-only", base, head],
-        capture_output=True, text=True, timeout=30,
-    )
-    lines = res.stdout.splitlines()
-    # merge-tree output: OID line, then conflicted file names (exit code 1 on conflicts)
-    conflicts = lines[1:] if res.returncode == 1 else []
-    return {"conflicts": [f for f in conflicts if f]}
+def _mirror_branches(path: Path) -> list:
+    res = _run_git("-C", str(path), "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    return [b for b in res.stdout.splitlines() if b]
 
 
-RPC_METHODS = {
-    "git.branches": (rpc_git_branches, {"repo_path"}),
-    "git.diff": (rpc_git_diff, {"repo_path", "base", "head"}),
-    "git.conflicts": (rpc_git_conflicts, {"repo_path", "base", "head"}),
-}
-
-
-class RpcIn(BaseModel):
-    method: str
-    params: dict = {}
-    id: Union[int, str, None] = None
-
-
-@app.post("/rpc")
-def rpc(body: RpcIn, user=Depends(current_user)):
-    entry = RPC_METHODS.get(body.method)
-    if not entry:
-        return {"error": {"code": -32601, "message": f"Unknown method: {body.method}"}, "id": body.id}
-    fn, required = entry
-    if not required.issubset(body.params):
-        return {
-            "error": {"code": -32602, "message": f"Missing params: {sorted(required - set(body.params))}"},
-            "id": body.id,
-        }
+@app.get("/api/projects/{pid}/github/conflicts")
+def github_conflicts(pid: int, base: str, head: str, user=Depends(current_user)):
+    """Exact merge-conflict preview between two branches of the linked repo."""
+    conn = db()
     try:
-        return {"result": fn(body.params), "id": body.id}
-    except ValueError as e:
-        return {"error": {"code": -32602, "message": str(e)}, "id": body.id}
-    except Exception as e:
-        return {"error": {"code": -32000, "message": str(e)}, "id": body.id}
+        require_member(conn, pid, user["id"])
+        owner, repo, _ = _project_repo(conn, pid)
+        token = _project_gh_token(conn, pid, user["id"])
+    finally:
+        conn.close()
+
+    if base == head:
+        raise HTTPException(400, "base and head must be different branches")
+
+    path = _repo_mirror(owner, repo, token)
+
+    # Only ever pass branch names git itself reported: blocks option injection
+    # (e.g. a branch named "--upload-pack=...") and bad refs.
+    known = _mirror_branches(path)
+    for name in (base, head):
+        if name not in known:
+            raise HTTPException(404, f"Unknown branch: {name}")
+
+    res = _run_git("-C", str(path), "merge-tree", "--write-tree", "--name-only", base, head)
+    if res.returncode not in (0, 1):
+        raise HTTPException(500, f"git merge-tree failed: {res.stderr.strip()[:300]}")
+
+    # merge-tree exits 1 when the merge is not clean. Its stdout is three
+    # blank-line-separated sections: the merged tree OID, the conflicted paths,
+    # then human-readable messages ("Auto-merging x", "CONFLICT (content): ...").
+    # Only the middle section is a file list — take lines after the OID up to the
+    # first blank line, or the messages get mistaken for filenames.
+    conflicts = []
+    if res.returncode == 1:
+        for line in res.stdout.splitlines()[1:]:
+            if not line.strip():
+                break
+            conflicts.append(line)
+
+    ahead = _run_git("-C", str(path), "rev-list", "--count", f"{base}..{head}").stdout.strip()
+    behind = _run_git("-C", str(path), "rev-list", "--count", f"{head}..{base}").stdout.strip()
+
+    return {
+        "base": base,
+        "head": head,
+        "clean": res.returncode == 0,
+        "conflicts": conflicts,
+        "ahead": int(ahead or 0),    # commits on head not in base
+        "behind": int(behind or 0),  # commits on base not in head
+    }
 
 
 # --- Serve the built frontend (single-origin: API + SPA on one port) ---
-# Registered LAST so all /api and /rpc routes above take precedence.
+# Registered LAST so all /api routes above take precedence.
 _DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if (_DIST / "index.html").exists():
     _ASSETS = _DIST / "assets"

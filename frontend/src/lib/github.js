@@ -35,3 +35,8 @@ export const ghPullDetail = (pid, number) => api(`/api/projects/${pid}/github/pu
 
 // --- Branch-history graph (Phase 3) ---
 export const ghGraph = (pid) => api(`/api/projects/${pid}/github/graph`)
+
+// Exact merge-conflict preview between two branches of the linked repo.
+// Server clones/fetches a bare mirror and runs `git merge-tree`.
+export const ghConflicts = (pid, base, head) =>
+  api(`/api/projects/${pid}/github/conflicts?base=${encodeURIComponent(base)}&head=${encodeURIComponent(head)}`)

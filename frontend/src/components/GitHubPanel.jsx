@@ -7,9 +7,84 @@ import { useEffect, useState, useCallback } from 'react'
 import {
   githubStatus, githubConnect, githubDisconnect, ghOAuthStart,
   getRepoLink, linkRepo, unlinkRepo,
-  ghBranches, ghPulls, ghIssues, ghPullDetail,
+  ghBranches, ghPulls, ghIssues, ghPullDetail, ghConflicts,
 } from '../lib/github'
 import BranchGraph from './BranchGraph.jsx'
+
+// Merge-conflict preview: pick two branches and ask the server whether merging
+// head into base would conflict. Exact — the backend runs `git merge-tree` on a
+// bare mirror, so this is what git would actually do, not a heuristic.
+function MergeCheck({ pid, branches }) {
+  const [base, setBase] = useState('')
+  const [head, setHead] = useState('')
+  const [result, setResult] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!branches?.length) return
+    setBase((b) => b || branches[0].name)
+    setHead((h) => h || (branches.find((x) => x.name !== branches[0].name)?.name ?? ''))
+  }, [branches])
+
+  async function check(e) {
+    e?.preventDefault()
+    setBusy(true); setError(''); setResult(null)
+    try {
+      setResult(await ghConflicts(pid, base, head))
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!branches?.length) return null
+
+  return (
+    <form className="merge-check" onSubmit={check}>
+      <div className="merge-row">
+        <label className="merge-field">
+          <span className="label">Merge into (base)</span>
+          <select value={base} onChange={(e) => setBase(e.target.value)}>
+            {branches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+          </select>
+        </label>
+        <label className="merge-field">
+          <span className="label">From (head)</span>
+          <select value={head} onChange={(e) => setHead(e.target.value)}>
+            {branches.map((b) => <option key={b.name} value={b.name}>{b.name}</option>)}
+          </select>
+        </label>
+        <button className="btn sm" type="submit" disabled={busy || !base || !head || base === head}>
+          {busy ? 'Checking…' : 'Check for conflicts'}
+        </button>
+      </div>
+
+      {busy && <p className="faint" style={{ margin: 0 }}>First check on a repo clones it — this can take a moment.</p>}
+      {error && <div className="alert error">{error}</div>}
+
+      {result && (
+        <div className={`merge-result ${result.clean ? 'clean' : 'conflict'}`}>
+          <div className="merge-verdict">
+            <span className={`badge ${result.clean ? 'success' : 'admin'}`}>
+              {result.clean ? 'Merges cleanly' : `${result.conflicts.length} conflicting file${result.conflicts.length === 1 ? '' : 's'}`}
+            </span>
+            <span className="faint">
+              {result.head} is {result.ahead} commit{result.ahead === 1 ? '' : 's'} ahead,{' '}
+              {result.behind} behind {result.base}
+            </span>
+          </div>
+          {!result.clean && (
+            <ul className="merge-files">
+              {result.conflicts.map((f) => <li key={f} className="mono">{f}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
+    </form>
+  )
+}
 
 // Class a unified-diff line so styles.css (.git-diff .add/.del/.hunk) colorizes it.
 function diffLineClass(line) {
@@ -93,17 +168,20 @@ function GitHubRepoData({ pid }) {
         {tab === 'graph' && <BranchGraph pid={pid} />}
 
         {tab === 'branches' && rows && (
-          <ul className="gh-list">
-            {rows.map((b) => (
-              <li key={b.name} className="gh-item">
-                <span className="mono">{b.name}</span>
-                <span className="row">
-                  {b.protected && <span className="badge">protected</span>}
-                  <span className="faint mono">{b.sha.slice(0, 7)}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
+          <>
+            <MergeCheck pid={pid} branches={rows} />
+            <ul className="gh-list">
+              {rows.map((b) => (
+                <li key={b.name} className="gh-item">
+                  <span className="mono">{b.name}</span>
+                  <span className="row">
+                    {b.protected && <span className="badge">protected</span>}
+                    <span className="faint mono">{b.sha.slice(0, 7)}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
 
         {tab === 'pulls' && rows && (
