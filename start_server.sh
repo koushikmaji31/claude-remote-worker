@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 #
-# start_server.sh — one command to bring up the whole Team Collab stack:
-#   • builds the frontend and serves it from the backend (single origin)
-#   • backend / product API + SPA  ->  http://127.0.0.1:8900
-#   • agent chat bus               ->  http://127.0.0.1:8899
-#   • remote worker                ->  http://127.0.0.1:8787
-#   • ngrok tunnels (web + bus) and prints your public website link
+# start_server.sh — one command to bring up the whole Team Collab stack and
+# publish it on your own domain via the existing Cloudflare Tunnel.
 #
-# Just run:  bash start_server.sh   (re-run any time to rebuild + restart)
+#   frontend + backend (single origin)  ->  http://localhost:8900  ->  https://huntjob.space
+#   Claude chat bus                     ->  http://localhost:8899  ->  https://bus.huntjob.space
+#   remote worker (local only)          ->  http://localhost:8788
+#
+# Just run:  bash start_server.sh     (re-run any time to rebuild + restart)
+#
+# Notes
+#  - The worker deliberately runs on :8788, NOT :8787, so it can never kill the
+#    jobhunt server that also uses :8787 on this machine.
+#  - PUBLIC_BASE_URL / BUS_PUBLIC_URL are exported so invite links and the
+#    per-project "join this Claude group" command render real https URLs.
+#  - Override anything: DOMAIN=example.com bash start_server.sh
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,13 +24,25 @@ mkdir -p logs
 # Load persisted settings (WORKER_TOKEN etc.) if present.
 if [[ -f .env ]]; then set -a; source .env; set +a; fi
 
+# --- config (override via env) ------------------------------------------------
+DOMAIN="${DOMAIN:-huntjob.space}"
+BUS_HOST="${BUS_HOST:-bus.$DOMAIN}"
+TUNNEL="${TUNNEL:-jobhunt}"
+APP_PORT="${APP_PORT:-8900}"
+BUS_PORT="${BUS_PORT:-8899}"
+WORKER_PORT="${WORKER_PORT:-8788}"
+CF_CONFIG="$HOME/.cloudflared/config.yml"
+
+export PUBLIC_BASE_URL="https://$DOMAIN"
+export BUS_PUBLIC_URL="https://$BUS_HOST"
+
 say()  { printf '\033[1;36m>> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!! %s\033[0m\n' "$*"; }
 
-# Kill whatever currently holds a TCP port (best-effort).
 free_port() {
   local pids; pids="$(lsof -ti tcp:"$1" 2>/dev/null || true)"
   [[ -n "$pids" ]] && kill $pids 2>/dev/null || true
+  return 0
 }
 
 # --- 0. deps -----------------------------------------------------------------
@@ -34,19 +53,19 @@ python3 -c "import fastapi, uvicorn" 2>/dev/null || {
 
 # --- 1. build the frontend ---------------------------------------------------
 say "Building frontend..."
-( cd frontend && [[ -d node_modules ]] || npm install --no-fund --no-audit >/dev/null 2>&1; npm run build )
+( cd frontend && { [[ -d node_modules ]] || npm install --no-fund --no-audit >/dev/null 2>&1; }; npm run build )
 
-# --- 2. backend on :8900 (serves API + the built SPA) ------------------------
-say "Starting backend (API + website) on :8900 ..."
-free_port 8900
-nohup python3 -m uvicorn app.platform:app --host 127.0.0.1 --port 8900 > logs/backend.log 2>&1 &
+# --- 2. backend on :$APP_PORT (API + the built SPA) --------------------------
+say "Starting backend (API + website) on :$APP_PORT ..."
+free_port "$APP_PORT"
+nohup python3 -m uvicorn app.platform:app --host 127.0.0.1 --port "$APP_PORT" > logs/backend.log 2>&1 &
 
-# --- 3. agent chat bus on :8899 ---------------------------------------------
-say "Starting chat bus on :8899 ..."
-free_port 8899
-nohup python3 -m uvicorn app.chat_server:app --host 127.0.0.1 --port 8899 > logs/bus.log 2>&1 &
+# --- 3. chat bus on :$BUS_PORT ----------------------------------------------
+say "Starting chat bus on :$BUS_PORT ..."
+free_port "$BUS_PORT"
+nohup python3 -m uvicorn app.chat_server:app --host 127.0.0.1 --port "$BUS_PORT" > logs/bus.log 2>&1 &
 
-# --- 4. remote worker on :8787 ----------------------------------------------
+# --- 4. remote worker on :$WORKER_PORT (never :8787 — jobhunt owns that) -----
 if [[ -z "${WORKER_TOKEN:-}" ]]; then
   if command -v openssl >/dev/null 2>&1; then WORKER_TOKEN="$(openssl rand -hex 24)"
   else WORKER_TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"; fi
@@ -54,58 +73,82 @@ if [[ -z "${WORKER_TOKEN:-}" ]]; then
   echo "WORKER_TOKEN=$WORKER_TOKEN" >> .env
   say "Generated a new WORKER_TOKEN (saved to .env)"
 fi
-say "Starting remote worker on :8787 ..."
-free_port 8787
+say "Starting remote worker on :$WORKER_PORT ..."
+free_port "$WORKER_PORT"
 CONTEXT_DIR="${CONTEXT_DIR:-$ROOT/context}" CLAUDE_BIN="${CLAUDE_BIN:-claude}" \
-  nohup python3 -m uvicorn app.worker:app --host 127.0.0.1 --port 8787 > logs/worker.log 2>&1 &
+  nohup python3 -m uvicorn app.worker:app --host 127.0.0.1 --port "$WORKER_PORT" > logs/worker.log 2>&1 &
 
-# --- 5. wait for the backend to answer --------------------------------------
+# --- 5. wait for the backend --------------------------------------------------
 say "Waiting for backend to come up ..."
+code=""
 for _ in $(seq 1 30); do
-  code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8900/ || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$APP_PORT/" || true)"
   [[ "$code" == "200" ]] && break
   sleep 0.5
 done
-[[ "${code:-}" == "200" ]] && say "Backend is up (serving the website)." || warn "Backend did not report ready — check logs/backend.log"
-
-# --- 6. ngrok tunnels + public link -----------------------------------------
-if command -v ngrok >/dev/null 2>&1; then
-  # Does a currently-running ngrok already forward to :8900? If not, (re)start it
-  # so it picks up the web->:8900 tunnel from ngrok.yml.
-  has_8900="$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null | python3 -c '
-import sys, json
-try: t = json.load(sys.stdin).get("tunnels", [])
-except Exception: t = []
-print("yes" if any(str(x.get("config",{}).get("addr","")).endswith(":8900") for x in t) else "no")' 2>/dev/null || echo no)"
-  if [[ "$has_8900" != "yes" ]]; then
-    say "Starting ngrok (web -> :8900, bus -> :8899) ..."
-    pkill -f "ngrok start" 2>/dev/null || true
-    sleep 1
-    nohup ngrok start web bus > logs/ngrok.log 2>&1 &
-    sleep 4
-  else
-    say "ngrok already forwarding to :8900 — reusing it."
-  fi
-  # Pull the public URL of the tunnel that forwards to :8900.
-  URL="$(curl -s http://127.0.0.1:4040/api/tunnels 2>/dev/null | python3 -c '
-import sys, json
-try:
-    t = json.load(sys.stdin).get("tunnels", [])
-except Exception:
-    t = []
-web = [x["public_url"] for x in t if str(x.get("config", {}).get("addr","")).endswith(":8900") and x["public_url"].startswith("https")]
-print(web[0] if web else "")' 2>/dev/null)"
-  echo
-  if [[ -n "$URL" ]]; then
-    printf '\033[1;32m==============================================================\033[0m\n'
-    printf '\033[1;32m  Your website is live at:  %s\033[0m\n' "$URL"
-    printf '\033[1;32m==============================================================\033[0m\n'
-  else
-    warn "ngrok is up but no :8900 tunnel URL yet — check http://127.0.0.1:4040 or logs/ngrok.log"
-  fi
+if [[ "$code" == "200" ]]; then
+  say "Backend is up (serving the website)."
 else
-  warn "ngrok not installed — website is local only at http://127.0.0.1:8900"
+  warn "Backend did not report ready — check logs/backend.log"
+fi
+
+# --- 6. Cloudflare Tunnel -----------------------------------------------------
+if ! command -v cloudflared >/dev/null 2>&1; then
+  warn "cloudflared not installed (brew install cloudflared) — local only at http://127.0.0.1:$APP_PORT"
+else
+  # Write the ingress config so the tunnel points at THIS app. Backed up once.
+  CRED="$(ls "$HOME"/.cloudflared/*.json 2>/dev/null | head -1 || true)"
+  TUNNEL_ID="$(cloudflared tunnel list 2>/dev/null | awk -v n="$TUNNEL" '$2==n {print $1}' | head -1)"
+  if [[ -z "$TUNNEL_ID" || -z "$CRED" ]]; then
+    warn "Tunnel '$TUNNEL' or its credentials not found — run: cloudflared tunnel login && cloudflared tunnel create $TUNNEL"
+  else
+    desired="$(cat <<EOF
+tunnel: $TUNNEL_ID
+credentials-file: $CRED
+
+ingress:
+  # Team Collab — backend serves the API and the built SPA (single origin).
+  - hostname: $DOMAIN
+    service: http://localhost:$APP_PORT
+  - hostname: www.$DOMAIN
+    service: http://localhost:$APP_PORT
+  # Claude chat bus — powers the per-project "join this group" command.
+  - hostname: $BUS_HOST
+    service: http://localhost:$BUS_PORT
+  - service: http_status:404
+EOF
+)"
+    if [[ ! -f "$CF_CONFIG" ]] || ! diff -q <(printf '%s\n' "$desired") "$CF_CONFIG" >/dev/null 2>&1; then
+      [[ -f "$CF_CONFIG" && ! -f "$CF_CONFIG.bak" ]] && cp "$CF_CONFIG" "$CF_CONFIG.bak" && say "Backed up old tunnel config to $CF_CONFIG.bak"
+      mkdir -p "$(dirname "$CF_CONFIG")"
+      printf '%s\n' "$desired" > "$CF_CONFIG"
+      say "Wrote tunnel config ($DOMAIN -> :$APP_PORT, $BUS_HOST -> :$BUS_PORT)"
+    fi
+
+    # Make sure DNS routes exist (no-op/error-safe if already routed).
+    for h in "$DOMAIN" "www.$DOMAIN" "$BUS_HOST"; do
+      cloudflared tunnel route dns "$TUNNEL" "$h" >/dev/null 2>&1 || true
+    done
+
+    say "Starting Cloudflare Tunnel '$TUNNEL' ..."
+    pkill -f "cloudflared tunnel" 2>/dev/null || true
+    sleep 1
+    nohup cloudflared tunnel run "$TUNNEL" > logs/cloudflared.log 2>&1 &
+    sleep 5
+
+    if grep -qiE "Registered tunnel connection|Connection .* registered" logs/cloudflared.log 2>/dev/null; then
+      say "Tunnel connected."
+    else
+      warn "Tunnel may still be connecting — check logs/cloudflared.log"
+    fi
+  fi
 fi
 
 echo
-say "All set. Logs: logs/backend.log  logs/bus.log  logs/worker.log  logs/ngrok.log"
+printf '\033[1;32m==============================================================\033[0m\n'
+printf '\033[1;32m  Website:  https://%s\033[0m\n' "$DOMAIN"
+printf '\033[1;32m  Bus:      https://%s\033[0m\n' "$BUS_HOST"
+printf '\033[1;32m==============================================================\033[0m\n'
+echo
+say "Local: app :$APP_PORT  bus :$BUS_PORT  worker :$WORKER_PORT (jobhunt's :8787 untouched)"
+say "Logs:  logs/backend.log  logs/bus.log  logs/worker.log  logs/cloudflared.log"
