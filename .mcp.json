@@ -2,7 +2,11 @@
   "mcpServers": {
     "bus": {
       "command": "python3",
-      "args": ["hooks/bus_mcp.py"]
+      "args": ["app/bus_mcp.py"]
+    },
+    "tickit": {
+      "command": "python3",
+      "args": ["hooks/tickit_mcp.py"]
     }
   }
 }

@@ -1,4 +1,5 @@
 """Team Collab Platform backend — see docs/API_CONTRACT.md (v1)."""
+import json
 import os
 import secrets
 import sqlite3
@@ -124,6 +125,21 @@ def init_db():
             user_id INTEGER NOT NULL REFERENCES users(id),
             return_to TEXT,
             created_at REAL NOT NULL
+        );
+        -- Tickit: one pasted ticket (shared context) per project, plus each
+        -- agent's live task list (tasks = JSON array of {"text","status"}).
+        CREATE TABLE IF NOT EXISTS tickets(
+            project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+            body TEXT,
+            set_by TEXT,
+            ts REAL
+        );
+        CREATE TABLE IF NOT EXISTS agent_tasks(
+            project_id INTEGER REFERENCES projects(id),
+            agent TEXT,
+            tasks TEXT,
+            ts REAL,
+            PRIMARY KEY(project_id, agent)
         );
         """
     )
@@ -1148,6 +1164,157 @@ def github_conflicts(pid: int, base: str, head: str, user=Depends(current_user))
         "ahead": int(ahead or 0),    # commits on head not in base
         "behind": int(behind or 0),  # commits on base not in head
     }
+
+
+# ---------- Tickit (shared ticket + live per-agent task lists) ----------
+
+def _clean_tasks(raw) -> str:
+    """Validate an incoming task list and return it as a JSON string.
+    Accepts a list of objects with 'text' and optional 'status'
+    (todo|doing|done, default 'todo'). Caps at 200. Raises 400 on bad input."""
+    if not isinstance(raw, list):
+        raise HTTPException(400, "tasks must be a list")
+    if len(raw) > 200:
+        raise HTTPException(400, "too many tasks (max 200)")
+    cleaned = []
+    for item in raw:
+        if not isinstance(item, dict) or "text" not in item:
+            raise HTTPException(400, "each task must be an object with 'text'")
+        text = item.get("text")
+        if not isinstance(text, str):
+            raise HTTPException(400, "task 'text' must be a string")
+        status = item.get("status", "todo")
+        if status not in ("todo", "doing", "done"):
+            raise HTTPException(400, "task 'status' must be todo|doing|done")
+        cleaned.append({"text": text, "status": status})
+    return json.dumps(cleaned)
+
+
+def _tickit_state(conn, pid: int) -> dict:
+    """Assemble the dashboard/agent view for a project id."""
+    trow = conn.execute(
+        "SELECT body, set_by, ts FROM tickets WHERE project_id=?", (pid,)
+    ).fetchone()
+    ticket = (
+        {"body": trow["body"], "set_by": trow["set_by"], "ts": trow["ts"]}
+        if trow else None
+    )
+    agents = []
+    for row in conn.execute(
+        "SELECT agent, tasks, ts FROM agent_tasks WHERE project_id=? ORDER BY agent",
+        (pid,),
+    ).fetchall():
+        try:
+            tasks = json.loads(row["tasks"]) if row["tasks"] else []
+        except (ValueError, TypeError):
+            tasks = []
+        agents.append({"agent": row["agent"], "tasks": tasks, "ts": row["ts"]})
+    return {"ticket": ticket, "agents": agents}
+
+
+def _bus_project(conn, request: Request, invite_code: str) -> int:
+    """Authorize a bus-token request and resolve invite_code -> project_id."""
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth.startswith("Bearer ") else ""
+    expected = _bus_token()
+    if not expected or token != expected:
+        raise HTTPException(401, "Invalid bus token")
+    proj = conn.execute(
+        "SELECT id FROM projects WHERE invite_code=?", (invite_code,)
+    ).fetchone()
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    return proj["id"]
+
+
+class TicketIn(BaseModel):
+    body: str
+
+
+@app.get("/api/projects/{pid}/tickit")
+def get_tickit(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        return _tickit_state(conn, pid)
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{pid}/tickit/ticket")
+def set_tickit_ticket(pid: int, body: TicketIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        conn.execute(
+            "INSERT INTO tickets(project_id, body, set_by, ts) VALUES(?,?,?,?) "
+            "ON CONFLICT(project_id) DO UPDATE SET body=excluded.body, "
+            "set_by=excluded.set_by, ts=excluded.ts",
+            (pid, body.body, user["name"], time.time()),
+        )
+        conn.commit()
+        return _tickit_state(conn, pid)
+    finally:
+        conn.close()
+
+
+class AgentTasksIn(BaseModel):
+    agent: str
+    tasks: list
+
+
+class AgentTicketIn(BaseModel):
+    agent: str
+    body: str
+
+
+@app.get("/api/tickit/{invite_code}")
+def get_tickit_bus(invite_code: str, request: Request):
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        return _tickit_state(conn, pid)
+    finally:
+        conn.close()
+
+
+@app.post("/api/tickit/{invite_code}/tasks")
+def set_tickit_tasks_bus(invite_code: str, body: AgentTasksIn, request: Request):
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        if not body.agent:
+            raise HTTPException(400, "agent is required")
+        tasks_json = _clean_tasks(body.tasks)
+        conn.execute(
+            "INSERT INTO agent_tasks(project_id, agent, tasks, ts) VALUES(?,?,?,?) "
+            "ON CONFLICT(project_id, agent) DO UPDATE SET tasks=excluded.tasks, "
+            "ts=excluded.ts",
+            (pid, body.agent, tasks_json, time.time()),
+        )
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/tickit/{invite_code}/ticket")
+def set_tickit_ticket_bus(invite_code: str, body: AgentTicketIn, request: Request):
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        if not body.agent:
+            raise HTTPException(400, "agent is required")
+        conn.execute(
+            "INSERT INTO tickets(project_id, body, set_by, ts) VALUES(?,?,?,?) "
+            "ON CONFLICT(project_id) DO UPDATE SET body=excluded.body, "
+            "set_by=excluded.set_by, ts=excluded.ts",
+            (pid, body.body, body.agent, time.time()),
+        )
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 # --- Serve the built frontend (single-origin: API + SPA on one port) ---
