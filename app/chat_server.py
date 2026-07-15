@@ -105,10 +105,10 @@ class SendRequest(BaseModel):
     text: str = ""
     to: Optional[str] = None  # None = broadcast
     image: Optional[str] = None  # optional data URL ("data:image/...;base64,...")
-    room: str = "global"  # project group (invite code); 'global' = shared bus
+    room: str = ""  # project group (invite code); required — there is no shared/global bus
 
 
-def _ensure_client(c, name: str, room: str = "global"):
+def _ensure_client(c, name: str, room: str = ""):
     """Register presence and keep the session's room current. New clients start
     at the current log tail so they don't replay history that predates them."""
     row = c.execute("SELECT name FROM clients WHERE name=?", (name,)).fetchone()
@@ -126,8 +126,19 @@ def health():
     return {"ok": True}
 
 
+def _require_room(room: str, star_ok: bool = False):
+    """Enforce strict project isolation: every request must name a specific
+    project room. There is no 'global' pool and no cross-project channel."""
+    if star_ok and room == "*":
+        return
+    if not room or room == "global":
+        raise HTTPException(status_code=400,
+                            detail="a specific project room is required (no global bus)")
+
+
 @app.post("/register")
-def register(name: str, room: str = "global"):
+def register(name: str, room: str = ""):
+    _require_room(room)
     with _lock, _conn() as c:
         _ensure_client(c, name, room)
     return {"ok": True, "name": name, "room": room}
@@ -180,9 +191,10 @@ threading.Thread(target=_stale_watch, daemon=True).start()
 
 
 @app.get("/who")
-def who(room: str = "global"):
+def who(room: str = ""):
     """List sessions in a room. room='*' returns every session across all rooms
     (used for globally-unique name allocation when a new session joins)."""
+    _require_room(room, star_ok=True)
     now = time.time()
     all_rooms = room == "*"
     with _lock, _conn() as c:
@@ -204,7 +216,8 @@ def who(room: str = "global"):
 
 
 @app.get("/history")
-def history(room: str = "global"):
+def history(room: str = ""):
+    _require_room(room)
     with _lock, _conn() as c:
         rows = c.execute("SELECT sender, recipient, text, image, ts FROM messages "
                          "WHERE room=? ORDER BY id", (room,)).fetchall()
@@ -218,6 +231,7 @@ MAX_IMAGE_BYTES = 2 * 1024 * 1024  # 2MB cap on image data-URL payloads
 
 @app.post("/send")
 def send(req: SendRequest):
+    _require_room(req.room)
     if req.image and len(req.image) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="Image exceeds 2MB limit")
     with _lock, _conn() as c:
@@ -227,7 +241,8 @@ def send(req: SendRequest):
 
 
 @app.get("/recv")
-def recv(name: str, timeout: int = 25, room: str = "global"):
+def recv(name: str, timeout: int = 25, room: str = ""):
+    _require_room(room)
     deadline = time.time() + min(timeout, 55)
     with _lock, _conn() as c:
         _ensure_client(c, name, room)

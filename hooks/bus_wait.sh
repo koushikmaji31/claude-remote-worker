@@ -8,6 +8,7 @@
 
 NAME=${1:?usage: bus_wait.sh <name>}
 . "$(dirname "$0")/bus_env.sh" 2>/dev/null || BUS_URL=${CLAUDE_BUS_URL:-http://127.0.0.1:8899}
+[ -z "${BUS_ROOM:-}" ] && exit 0   # no project room => not on the bus (no global channel)
 
 while true; do
   [ -f /tmp/claude-bus/off ] && exit 0

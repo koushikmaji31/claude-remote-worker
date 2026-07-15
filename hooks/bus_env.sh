@@ -36,8 +36,11 @@ elif [ -s "$_repo_room" ]; then
 elif [ -s /tmp/claude-bus/room ]; then
   BUS_ROOM=$(cat /tmp/claude-bus/room)
 else
-  BUS_ROOM=global
+  BUS_ROOM=""
 fi
+# No "global" pool: a session with no project room is simply NOT on the bus.
+# Every room is a specific project; there is no shared cross-project channel.
+[ "$BUS_ROOM" = "global" ] && BUS_ROOM=""
 
 # Agent name prefix for this teammate ("koushik" -> koushik_1, koushik_2 ...).
 # env CLAUDE_BUS_USER > file /tmp/claude-bus/user (written by join-bus.sh from

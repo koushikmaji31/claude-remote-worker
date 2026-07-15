@@ -24,8 +24,10 @@ fi
 BUS_AUTH=()
 [ -n "$BUS_TOKEN" ] && BUS_AUTH=(-H "Authorization: Bearer $BUS_TOKEN")
 
-# Room: which project group this session is joined to.
-# env CLAUDE_BUS_ROOM > file /tmp/claude-bus/room > default 'global' (shared bus).
+# Room: which project group this session is joined to. Resolved PER-REPO so two
+# repos on the same machine stay in different rooms (the old machine-global
+# /tmp/claude-bus/room collapsed every session into whichever room was written
+# last). Order: env CLAUDE_BUS_ROOM > <repo>/.claude/bus-room > /tmp fallback > global.
 _repo_room="${CLAUDE_PROJECT_DIR:-$PWD}/.claude/bus-room"
 if [ -n "$CLAUDE_BUS_ROOM" ]; then
   BUS_ROOM=$CLAUDE_BUS_ROOM
@@ -34,8 +36,11 @@ elif [ -s "$_repo_room" ]; then
 elif [ -s /tmp/claude-bus/room ]; then
   BUS_ROOM=$(cat /tmp/claude-bus/room)
 else
-  BUS_ROOM=global
+  BUS_ROOM=""
 fi
+# No "global" pool: a session with no project room is simply NOT on the bus.
+# Every room is a specific project; there is no shared cross-project channel.
+[ "$BUS_ROOM" = "global" ] && BUS_ROOM=""
 
 # Agent name prefix for this teammate ("koushik" -> koushik_1, koushik_2 ...).
 # env CLAUDE_BUS_USER > file /tmp/claude-bus/user (written by join-bus.sh from

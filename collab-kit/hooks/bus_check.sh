@@ -9,6 +9,7 @@ namefile=/tmp/claude-bus/names/$sid
 [ -f /tmp/claude-bus/off ] && exit 0
 name=$(cat "$namefile")
 . "$(dirname "$0")/bus_env.sh"
+[ -z "${BUS_ROOM:-}" ] && exit 0   # no project room => not on the bus (no global channel)
 
 out=$(curl -s -m 5 "${BUS_AUTH[@]}" "$BUS_URL/recv?name=$name&timeout=0&room=$BUS_ROOM")
 [ -z "$out" ] && exit 0

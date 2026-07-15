@@ -67,17 +67,13 @@ def _agent_name():
 
 def _room():
     """Room (=project invite code) resolved PER-REPO, not machine-global:
-    env CLAUDE_BUS_ROOM > <repo>/.claude/bus-room > /tmp/claude-bus/room > 'global'.
-    The MCP server launches with cwd = the repo root, so cwd/.claude/bus-room is
-    this repo's room even when other repos on the machine use a different one."""
-    r = os.environ.get("CLAUDE_BUS_ROOM")
-    if r:
-        return r
-    base = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    r = _read(os.path.join(base, ".claude", "bus-room"))
-    if r:
-        return r
-    return _read("/tmp/claude-bus/room") or "global"
+    env CLAUDE_BUS_ROOM > <repo>/.claude/bus-room > /tmp/claude-bus/room.
+    Returns "" when this repo isn't attached to a project — there is no 'global'
+    pool, so ticket tools then refuse rather than touching a shared channel."""
+    r = (os.environ.get("CLAUDE_BUS_ROOM")
+         or _read(os.path.join(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), ".claude", "bus-room"))
+         or _read("/tmp/claude-bus/room") or "")
+    return "" if r == "global" else r
 
 
 def _bus_token():
@@ -154,6 +150,10 @@ TOOLS = [
 
 def call_tool(name, args):
     room = _room()      # resolved fresh: room/agent can change between calls
+    if not room:
+        return {"error": "This repo is not attached to a project (no room). There is "
+                "no global ticket board — run the join-bus command for your project "
+                "in this repo, then restart Claude."}
     agent = _agent_name()
     if name == "ticket_set_tasks":
         return _http("POST", f"/api/ticket/{room}/tasks",

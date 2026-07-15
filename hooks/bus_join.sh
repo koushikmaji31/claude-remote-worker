@@ -9,6 +9,16 @@ mkdir -p /tmp/claude-bus/names
 [ -f /tmp/claude-bus/off ] && exit 0
 . "$(dirname "$0")/bus_env.sh"
 
+# No project room => do NOT join any bus. There is no shared/global channel:
+# a session only talks within its project. Run join-bus.sh <url> <token> <invite>
+# in this repo to attach it to a project.
+if [ -z "$BUS_ROOM" ]; then
+  cat <<'EOF'
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Not connected to any project bus (no project room set for this repo). There is no global channel. To join this repo to a project, run the join-bus command from the project's page (writes .claude/bus-room), then restart."}}
+EOF
+  exit 0
+fi
+
 # Start the bus server if it's down — but only for a local bus; never
 # auto-start anything when pointed at a remote bus.
 if ! curl -s -m 2 "${BUS_AUTH[@]}" "$BUS_URL/health" >/dev/null 2>&1; then

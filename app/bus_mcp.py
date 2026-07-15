@@ -43,9 +43,11 @@ def _room(args):
     The MCP launches with cwd = the repo root, so cwd/.claude/bus-room is this
     repo's room even when another repo on the machine uses a different one."""
     base = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    return (args.get("room") or os.environ.get("CLAUDE_BUS_ROOM")
+    room = (args.get("room") or os.environ.get("CLAUDE_BUS_ROOM")
             or _read(os.path.join(base, ".claude", "bus-room"))
-            or _read("/tmp/claude-bus/room") or "global")
+            or _read("/tmp/claude-bus/room") or "")
+    # No "global" pool: unset/global means this repo is not attached to a project.
+    return "" if room == "global" else room
 
 
 def _http(method, path, body=None):
@@ -106,6 +108,10 @@ TOOLS = [
 
 def call_tool(name, args):
     room = _room(args)
+    if not room:
+        return {"error": "This repo is not attached to a project bus (no room). "
+                "There is no global channel — run the join-bus command for your "
+                "project in this repo, then restart Claude."}
     if name == "bus_send":
         return _http("POST", "/send", {"sender": args["sender"], "text": args["text"],
                                        "to": args.get("to"), "image": args.get("image"),
