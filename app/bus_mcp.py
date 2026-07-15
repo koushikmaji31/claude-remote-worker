@@ -26,9 +26,15 @@ def _read(path):
         return ""
 
 
-BUS_URL = os.environ.get("CLAUDE_BUS_URL") or _read("/tmp/claude-bus/url") or "http://127.0.0.1:8899"
-BUS_URL = BUS_URL.rstrip("/")
-BUS_TOKEN = os.environ.get("CLAUDE_BUS_TOKEN") or _read("/tmp/claude-bus/token")
+# Resolved FRESH on every call (not cached at import) so a bus token rotation is
+# picked up without restarting the MCP server / Claude.
+def _bus_url():
+    url = os.environ.get("CLAUDE_BUS_URL") or _read("/tmp/claude-bus/url") or "http://127.0.0.1:8899"
+    return url.rstrip("/")
+
+
+def _bus_token():
+    return os.environ.get("CLAUDE_BUS_TOKEN") or _read("/tmp/claude-bus/token")
 
 
 def _room(args):
@@ -43,10 +49,14 @@ def _room(args):
 
 
 def _http(method, path, body=None):
-    req = urllib.request.Request(BUS_URL + path, method=method)
+    req = urllib.request.Request(_bus_url() + path, method=method)
     req.add_header("Content-Type", "application/json")
-    if BUS_TOKEN:
-        req.add_header("Authorization", f"Bearer {BUS_TOKEN}")
+    # Cloudflare returns 403 to the default "Python-urllib" User-Agent, so the
+    # bus behind the tunnel rejected every MCP call. Any real UA passes.
+    req.add_header("User-Agent", "TeamCollab-MCP/1.0")
+    token = _bus_token()
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     data = json.dumps(body).encode() if body is not None else None
     try:
         with urllib.request.urlopen(req, data=data, timeout=30) as r:

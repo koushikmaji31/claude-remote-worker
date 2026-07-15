@@ -80,17 +80,19 @@ def _room():
     return _read("/tmp/claude-bus/room") or "global"
 
 
-TICKET_URL = _derive_url()
-BUS_TOKEN = os.environ.get("CLAUDE_BUS_TOKEN") or _read("/tmp/claude-bus/token")
-ROOM = _room()
-AGENT = _agent_name()
+def _bus_token():
+    # Resolved fresh per call so a bus token rotation is picked up without a restart.
+    return os.environ.get("CLAUDE_BUS_TOKEN") or _read("/tmp/claude-bus/token")
 
 
 def _http(method, path, body=None):
-    req = urllib.request.Request(TICKET_URL + path, method=method)
+    req = urllib.request.Request(_derive_url() + path, method=method)
     req.add_header("Content-Type", "application/json")
-    if BUS_TOKEN:
-        req.add_header("Authorization", f"Bearer {BUS_TOKEN}")
+    # Cloudflare 403s the default "Python-urllib" User-Agent; any real UA passes.
+    req.add_header("User-Agent", "TeamCollab-MCP/1.0")
+    token = _bus_token()
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     data = json.dumps(body).encode() if body is not None else None
     try:
         with urllib.request.urlopen(req, data=data, timeout=30) as r:
@@ -151,16 +153,18 @@ TOOLS = [
 
 
 def call_tool(name, args):
+    room = _room()      # resolved fresh: room/agent can change between calls
+    agent = _agent_name()
     if name == "ticket_set_tasks":
-        return _http("POST", f"/api/ticket/{ROOM}/tasks",
-                     {"agent": AGENT, "tasks": args.get("tasks", [])})
+        return _http("POST", f"/api/ticket/{room}/tasks",
+                     {"agent": agent, "tasks": args.get("tasks", [])})
     if name == "ticket_list":
-        return _http("GET", f"/api/ticket/{ROOM}")
+        return _http("GET", f"/api/ticket/{room}")
     if name == "ticket_set_ticket":
-        return _http("POST", f"/api/ticket/{ROOM}/ticket",
-                     {"agent": AGENT, "body": args.get("body", "")})
+        return _http("POST", f"/api/ticket/{room}/ticket",
+                     {"agent": agent, "body": args.get("body", "")})
     if name == "ticket_get_ticket":
-        res = _http("GET", f"/api/ticket/{ROOM}")
+        res = _http("GET", f"/api/ticket/{room}")
         if isinstance(res, dict) and "error" in res:
             return res
         return {"ticket": (res or {}).get("ticket")}
