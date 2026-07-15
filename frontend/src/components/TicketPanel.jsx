@@ -1,9 +1,9 @@
-// Tickit space — a shared ticket/context pasted at the top, and a live board of
-// each agent's task list. Polls getTickit every 3s like ChatPanel so the board
+// Ticket space — a shared ticket/context pasted at the top, and a live board of
+// each agent's task list. Polls getTicket every 3s like ChatPanel so the board
 // stays live as agents publish progress. Styling uses shared design tokens plus
-// .tickit-* rules; no hardcoded colors, no emoji.
+// .ticket-* rules; no hardcoded colors, no emoji.
 import { useEffect, useState, useCallback } from 'react'
-import { getTickit, setTicket } from '../lib/tickit.js'
+import { getTicket, setTicket } from '../lib/ticket.js'
 
 const STATUSES = ['todo', 'doing', 'done']
 
@@ -16,7 +16,7 @@ function relTime(ts) {
   return `${Math.floor(s / 86400)}d ago`
 }
 
-export default function TickitPanel({ pid, me }) {
+export default function TicketPanel({ pid, me }) {
   const [data, setData] = useState(null)
   const [draft, setDraft] = useState('')
   const [editing, setEditing] = useState(false)
@@ -24,7 +24,7 @@ export default function TickitPanel({ pid, me }) {
   const [error, setError] = useState('')
 
   const poll = useCallback(() => {
-    getTickit(pid)
+    getTicket(pid)
       .then((d) => {
         setData(d)
         // Only seed the draft while not actively editing, so live polls don't
@@ -69,15 +69,15 @@ export default function TickitPanel({ pid, me }) {
         <div className="panel-body">
           {error && <div className="alert error">{error}</div>}
           {editing || !ticket ? (
-            <div className="tickit-editor">
+            <div className="ticket-editor">
               <textarea
-                className="tickit-textarea"
+                className="ticket-textarea"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="Paste the ticket / shared context here…"
                 rows={8}
               />
-              <div className="tickit-editor-actions">
+              <div className="ticket-editor-actions">
                 {ticket && editing && (
                   <button className="btn ghost sm" onClick={() => { setEditing(false); setDraft(ticket.body || '') }}>Cancel</button>
                 )}
@@ -87,9 +87,9 @@ export default function TickitPanel({ pid, me }) {
               </div>
             </div>
           ) : (
-            <div className="tickit-ticket">
-              <pre className="tickit-body">{ticket.body}</pre>
-              <div className="tickit-meta faint">
+            <div className="ticket-ticket">
+              <pre className="ticket-body">{ticket.body}</pre>
+              <div className="ticket-meta faint">
                 Set by {ticket.set_by || 'unknown'} · {relTime(ticket.ts)}
               </div>
             </div>
@@ -106,21 +106,21 @@ export default function TickitPanel({ pid, me }) {
           {agents.length === 0 ? (
             <div className="muted">No agents have published tasks yet.</div>
           ) : (
-            <div className="tickit-board">
+            <div className="ticket-board">
               {agents.map((a) => (
-                <div key={a.agent} className="tickit-col card">
-                  <div className="tickit-col-head">
-                    <span className="tickit-agent">{a.agent}</span>
+                <div key={a.agent} className="ticket-col card">
+                  <div className="ticket-col-head">
+                    <span className="ticket-agent">{a.agent}</span>
                     <span className="faint">{relTime(a.ts)}</span>
                   </div>
-                  <ul className="tickit-tasks">
-                    {(a.tasks || []).length === 0 && <li className="muted tickit-empty">No tasks</li>}
+                  <ul className="ticket-tasks">
+                    {(a.tasks || []).length === 0 && <li className="muted ticket-empty">No tasks</li>}
                     {(a.tasks || []).map((t, i) => (
-                      <li key={i} className="tickit-task">
-                        <span className={`badge tickit-pill ${STATUSES.includes(t.status) ? t.status : 'todo'}`}>
+                      <li key={i} className="ticket-task">
+                        <span className={`badge ticket-pill ${STATUSES.includes(t.status) ? t.status : 'todo'}`}>
                           {STATUSES.includes(t.status) ? t.status : 'todo'}
                         </span>
-                        <span className="tickit-task-text">{t.text}</span>
+                        <span className="ticket-task-text">{t.text}</span>
                       </li>
                     ))}
                   </ul>

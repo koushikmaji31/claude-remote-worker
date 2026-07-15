@@ -4,9 +4,9 @@
       "command": "python3",
       "args": ["app/bus_mcp.py"]
     },
-    "tickit": {
+    "ticket": {
       "command": "python3",
-      "args": ["hooks/tickit_mcp.py"]
+      "args": ["hooks/ticket_mcp.py"]
     }
   }
 }

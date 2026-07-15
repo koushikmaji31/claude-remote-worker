@@ -126,7 +126,7 @@ def init_db():
             return_to TEXT,
             created_at REAL NOT NULL
         );
-        -- Tickit: one pasted ticket (shared context) per project, plus each
+        -- Ticket: one pasted ticket (shared context) per project, plus each
         -- agent's live task list (tasks = JSON array of {"text","status"}).
         CREATE TABLE IF NOT EXISTS tickets(
             project_id INTEGER PRIMARY KEY REFERENCES projects(id),
@@ -1166,7 +1166,7 @@ def github_conflicts(pid: int, base: str, head: str, user=Depends(current_user))
     }
 
 
-# ---------- Tickit (shared ticket + live per-agent task lists) ----------
+# ---------- Ticket (shared ticket + live per-agent task lists) ----------
 
 def _clean_tasks(raw) -> str:
     """Validate an incoming task list and return it as a JSON string.
@@ -1190,7 +1190,7 @@ def _clean_tasks(raw) -> str:
     return json.dumps(cleaned)
 
 
-def _tickit_state(conn, pid: int) -> dict:
+def _ticket_state(conn, pid: int) -> dict:
     """Assemble the dashboard/agent view for a project id."""
     trow = conn.execute(
         "SELECT body, set_by, ts FROM tickets WHERE project_id=?", (pid,)
@@ -1231,18 +1231,18 @@ class TicketIn(BaseModel):
     body: str
 
 
-@app.get("/api/projects/{pid}/tickit")
-def get_tickit(pid: int, user=Depends(current_user)):
+@app.get("/api/projects/{pid}/ticket")
+def get_ticket(pid: int, user=Depends(current_user)):
     conn = db()
     try:
         require_member(conn, pid, user["id"])
-        return _tickit_state(conn, pid)
+        return _ticket_state(conn, pid)
     finally:
         conn.close()
 
 
-@app.post("/api/projects/{pid}/tickit/ticket")
-def set_tickit_ticket(pid: int, body: TicketIn, user=Depends(current_user)):
+@app.post("/api/projects/{pid}/ticket/ticket")
+def set_ticket_ticket(pid: int, body: TicketIn, user=Depends(current_user)):
     conn = db()
     try:
         require_member(conn, pid, user["id"])
@@ -1253,7 +1253,7 @@ def set_tickit_ticket(pid: int, body: TicketIn, user=Depends(current_user)):
             (pid, body.body, user["name"], time.time()),
         )
         conn.commit()
-        return _tickit_state(conn, pid)
+        return _ticket_state(conn, pid)
     finally:
         conn.close()
 
@@ -1268,18 +1268,18 @@ class AgentTicketIn(BaseModel):
     body: str
 
 
-@app.get("/api/tickit/{invite_code}")
-def get_tickit_bus(invite_code: str, request: Request):
+@app.get("/api/ticket/{invite_code}")
+def get_ticket_bus(invite_code: str, request: Request):
     conn = db()
     try:
         pid = _bus_project(conn, request, invite_code)
-        return _tickit_state(conn, pid)
+        return _ticket_state(conn, pid)
     finally:
         conn.close()
 
 
-@app.post("/api/tickit/{invite_code}/tasks")
-def set_tickit_tasks_bus(invite_code: str, body: AgentTasksIn, request: Request):
+@app.post("/api/ticket/{invite_code}/tasks")
+def set_ticket_tasks_bus(invite_code: str, body: AgentTasksIn, request: Request):
     conn = db()
     try:
         pid = _bus_project(conn, request, invite_code)
@@ -1298,8 +1298,8 @@ def set_tickit_tasks_bus(invite_code: str, body: AgentTasksIn, request: Request)
         conn.close()
 
 
-@app.post("/api/tickit/{invite_code}/ticket")
-def set_tickit_ticket_bus(invite_code: str, body: AgentTicketIn, request: Request):
+@app.post("/api/ticket/{invite_code}/ticket")
+def set_ticket_ticket_bus(invite_code: str, body: AgentTicketIn, request: Request):
     conn = db()
     try:
         pid = _bus_project(conn, request, invite_code)

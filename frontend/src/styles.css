@@ -1061,8 +1061,8 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
   background: var(--warning-soft);
 }
 
-/* ---------- Tickit ---------- */
-.tickit-textarea {
+/* ---------- Ticket ---------- */
+.ticket-textarea {
   width: 100%;
   font: 13px/1.5 var(--mono);
   color: var(--text);
@@ -1072,40 +1072,40 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
   padding: var(--sp-3);
   resize: vertical;
 }
-.tickit-textarea:focus { outline: none; box-shadow: var(--ring); border-color: var(--brand-500); }
-.tickit-editor-actions {
+.ticket-textarea:focus { outline: none; box-shadow: var(--ring); border-color: var(--brand-500); }
+.ticket-editor-actions {
   display: flex; justify-content: flex-end; gap: var(--sp-2);
   margin-top: var(--sp-3);
 }
-.tickit-body {
+.ticket-body {
   margin: 0;
   font: 13px/1.55 var(--mono);
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
 }
-.tickit-meta { margin-top: var(--sp-3); font-size: 12px; }
+.ticket-meta { margin-top: var(--sp-3); font-size: 12px; }
 
-.tickit-board {
+.ticket-board {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: var(--sp-3);
 }
-.tickit-col { padding: var(--sp-3); }
-.tickit-col-head {
+.ticket-col { padding: var(--sp-3); }
+.ticket-col-head {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: var(--sp-2);
   margin-bottom: var(--sp-3);
   padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--border);
 }
-.tickit-agent { font-weight: 600; font-size: 13px; color: var(--text); }
-.tickit-tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
-.tickit-task { display: flex; align-items: flex-start; gap: var(--sp-2); font-size: 13px; }
-.tickit-task-text { color: var(--text); line-height: 1.4; word-break: break-word; }
-.tickit-empty { font-size: 12.5px; }
+.ticket-agent { font-weight: 600; font-size: 13px; color: var(--text); }
+.ticket-tasks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.ticket-task { display: flex; align-items: flex-start; gap: var(--sp-2); font-size: 13px; }
+.ticket-task-text { color: var(--text); line-height: 1.4; word-break: break-word; }
+.ticket-empty { font-size: 12.5px; }
 
-.tickit-pill { flex: none; text-transform: capitalize; }
-.tickit-pill.todo { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
-.tickit-pill.doing { background: var(--warning-soft); color: var(--warning); }
-.tickit-pill.done { background: var(--success-soft); color: var(--success); }
+.ticket-pill { flex: none; text-transform: capitalize; }
+.ticket-pill.todo { background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); }
+.ticket-pill.doing { background: var(--warning-soft); color: var(--warning); }
+.ticket-pill.done { background: var(--success-soft); color: var(--success); }

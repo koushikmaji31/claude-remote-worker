@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Minimal MCP (stdio) server exposing the per-project Tickit dashboard as tools.
+"""Minimal MCP (stdio) server exposing the per-project Ticket dashboard as tools.
 
 No third-party deps — speaks MCP's JSON-RPC over stdin/stdout directly.
 Configured via .mcp.json at the repo root; every Claude session in this project
-gets: tickit_set_tasks, tickit_list, tickit_set_ticket, tickit_get_ticket.
+gets: ticket_set_tasks, ticket_list, ticket_set_ticket, ticket_get_ticket.
 
-The platform URL resolves from env TICKIT_URL, else it's derived from the bus url
+The platform URL resolves from env TICKET_URL, else it's derived from the bus url
 in /tmp/claude-bus/url (strip a leading 'bus.' host, map port :8899 -> :8900),
 fallback http://127.0.0.1:8900. Auth uses the bus token (/tmp/claude-bus/token)
 and the room (=project invite_code, /tmp/claude-bus/room). The agent name comes
@@ -30,8 +30,8 @@ def _read(path):
 
 
 def _derive_url():
-    """TICKIT_URL env, else derive the platform URL from the bus url."""
-    env = os.environ.get("TICKIT_URL")
+    """TICKET_URL env, else derive the platform URL from the bus url."""
+    env = os.environ.get("TICKET_URL")
     if env:
         return env.rstrip("/")
     bus = _read("/tmp/claude-bus/url")
@@ -65,14 +65,14 @@ def _agent_name():
     return socket.gethostname()
 
 
-TICKIT_URL = _derive_url()
+TICKET_URL = _derive_url()
 BUS_TOKEN = os.environ.get("CLAUDE_BUS_TOKEN") or _read("/tmp/claude-bus/token")
 ROOM = os.environ.get("CLAUDE_BUS_ROOM") or _read("/tmp/claude-bus/room")
 AGENT = _agent_name()
 
 
 def _http(method, path, body=None):
-    req = urllib.request.Request(TICKIT_URL + path, method=method)
+    req = urllib.request.Request(TICKET_URL + path, method=method)
     req.add_header("Content-Type", "application/json")
     if BUS_TOKEN:
         req.add_header("Authorization", f"Bearer {BUS_TOKEN}")
@@ -88,8 +88,8 @@ def _http(method, path, body=None):
 
 TOOLS = [
     {
-        "name": "tickit_set_tasks",
-        "description": "Publish your task list to the Tickit dashboard so every agent on "
+        "name": "ticket_set_tasks",
+        "description": "Publish your task list to the Ticket dashboard so every agent on "
                        "this project can see your progress. Replaces your previous list.",
         "inputSchema": {
             "type": "object",
@@ -112,12 +112,12 @@ TOOLS = [
         },
     },
     {
-        "name": "tickit_list",
+        "name": "ticket_list",
         "description": "Fetch the shared ticket and every agent's task list for this project.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "tickit_set_ticket",
+        "name": "ticket_set_ticket",
         "description": "Set/replace the shared ticket (project context) for this project.",
         "inputSchema": {
             "type": "object",
@@ -128,7 +128,7 @@ TOOLS = [
         },
     },
     {
-        "name": "tickit_get_ticket",
+        "name": "ticket_get_ticket",
         "description": "Fetch just the shared ticket (project context) for this project.",
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -136,16 +136,16 @@ TOOLS = [
 
 
 def call_tool(name, args):
-    if name == "tickit_set_tasks":
-        return _http("POST", f"/api/tickit/{ROOM}/tasks",
+    if name == "ticket_set_tasks":
+        return _http("POST", f"/api/ticket/{ROOM}/tasks",
                      {"agent": AGENT, "tasks": args.get("tasks", [])})
-    if name == "tickit_list":
-        return _http("GET", f"/api/tickit/{ROOM}")
-    if name == "tickit_set_ticket":
-        return _http("POST", f"/api/tickit/{ROOM}/ticket",
+    if name == "ticket_list":
+        return _http("GET", f"/api/ticket/{ROOM}")
+    if name == "ticket_set_ticket":
+        return _http("POST", f"/api/ticket/{ROOM}/ticket",
                      {"agent": AGENT, "body": args.get("body", "")})
-    if name == "tickit_get_ticket":
-        res = _http("GET", f"/api/tickit/{ROOM}")
+    if name == "ticket_get_ticket":
+        res = _http("GET", f"/api/ticket/{ROOM}")
         if isinstance(res, dict) and "error" in res:
             return res
         return {"ticket": (res or {}).get("ticket")}
@@ -166,7 +166,7 @@ def main():
         if method == "initialize":
             resp = {"protocolVersion": msg.get("params", {}).get("protocolVersion", "2024-11-05"),
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "tickit", "version": "1.0.0"}}
+                    "serverInfo": {"name": "ticket", "version": "1.0.0"}}
         elif method == "tools/list":
             resp = {"tools": TOOLS}
         elif method == "tools/call":

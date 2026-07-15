@@ -5,7 +5,7 @@ import ThemeToggle from './ui/ThemeToggle.jsx'
 import ChatPanel from './components/ChatPanel.jsx'
 import GitHubPanel from './components/GitHubPanel.jsx'
 import OverviewDashboard from './components/OverviewDashboard.jsx'
-import TickitPanel from './components/TickitPanel.jsx'
+import TicketPanel from './components/TicketPanel.jsx'
 
 function initials(name) {
   return (name || '?')
@@ -20,7 +20,7 @@ const NAV = [
   { id: 'overview', label: 'Overview' },
   { id: 'discussion', label: 'Discussion' },
   { id: 'branches', label: 'Branches' }, // GitHub-backed (graph, PRs, issues)
-  { id: 'tickit', label: 'Tickit' },
+  { id: 'ticket', label: 'Ticket' },
   { id: 'members', label: 'Members' },
 ]
 
@@ -29,7 +29,7 @@ function NavIcon({ id }) {
   if (id === 'overview') return <svg {...common}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
   if (id === 'discussion') return <svg {...common}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
   if (id === 'branches') return <svg {...common}><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7M8.5 6H14a4 4 0 0 1 4 4v.5M18 10.5V13" /></svg>
-  if (id === 'tickit') return <svg {...common}><path d="M20.6 12a2.4 2.4 0 0 0 1.4-2.2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v3.8A2.4 2.4 0 0 0 3.4 12 2.4 2.4 0 0 0 2 14.2V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3.8A2.4 2.4 0 0 0 20.6 12z" /><path d="M13 5v2M13 11v2M13 17v2" /></svg>
+  if (id === 'ticket') return <svg {...common}><path d="M20.6 12a2.4 2.4 0 0 0 1.4-2.2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v3.8A2.4 2.4 0 0 0 3.4 12 2.4 2.4 0 0 0 2 14.2V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3.8A2.4 2.4 0 0 0 20.6 12z" /><path d="M13 5v2M13 11v2M13 17v2" /></svg>
   return <svg {...common}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /></svg>
 }
 
@@ -234,7 +234,7 @@ export default function Project() {
 
           {view === 'branches' && <GitHubPanel pid={pid} isAdmin={isAdmin} />}
 
-          {view === 'tickit' && <TickitPanel pid={pid} me={me} />}
+          {view === 'ticket' && <TicketPanel pid={pid} me={me} />}
 
           {view === 'members' && (
             <Section title="Members" action={<span className="tag">{memberCount}</span>}>
