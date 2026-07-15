@@ -26,8 +26,11 @@ BUS_AUTH=()
 
 # Room: which project group this session is joined to.
 # env CLAUDE_BUS_ROOM > file /tmp/claude-bus/room > default 'global' (shared bus).
+_repo_room="${CLAUDE_PROJECT_DIR:-$PWD}/.claude/bus-room"
 if [ -n "$CLAUDE_BUS_ROOM" ]; then
   BUS_ROOM=$CLAUDE_BUS_ROOM
+elif [ -s "$_repo_room" ]; then
+  BUS_ROOM=$(cat "$_repo_room")
 elif [ -s /tmp/claude-bus/room ]; then
   BUS_ROOM=$(cat /tmp/claude-bus/room)
 else

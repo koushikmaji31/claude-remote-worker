@@ -32,8 +32,13 @@ BUS_TOKEN = os.environ.get("CLAUDE_BUS_TOKEN") or _read("/tmp/claude-bus/token")
 
 
 def _room(args):
-    """Room resolves like the hooks: explicit arg > env > file > 'global'."""
+    """Room resolves PER-REPO (not machine-global): explicit arg > env
+    CLAUDE_BUS_ROOM > <repo>/.claude/bus-room > /tmp/claude-bus/room > 'global'.
+    The MCP launches with cwd = the repo root, so cwd/.claude/bus-room is this
+    repo's room even when another repo on the machine uses a different one."""
+    base = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     return (args.get("room") or os.environ.get("CLAUDE_BUS_ROOM")
+            or _read(os.path.join(base, ".claude", "bus-room"))
             or _read("/tmp/claude-bus/room") or "global")
 
 

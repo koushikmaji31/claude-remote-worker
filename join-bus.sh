@@ -42,6 +42,10 @@ printf '%s' "$BUS_TOKEN"   > /tmp/claude-bus/token
 printf '%s' "$BUS_ROOM"    > /tmp/claude-bus/room
 [ -n "$BUS_USER" ] && printf '%s' "$BUS_USER" > /tmp/claude-bus/user
 
+# Pin the room to THIS repo so different repos on one machine stay in different
+# groups (the /tmp copy is a machine-global fallback that any join/tool overwrites).
+printf '%s' "$BUS_ROOM" > .claude/bus-room
+
 ok=$(curl -s -m 10 -H "Authorization: Bearer $BUS_TOKEN" "${BUS_URL%/}/health" || true)
 if [ "$ok" = '{"ok":true}' ]; then
   echo "Bus reachable — you are connected."

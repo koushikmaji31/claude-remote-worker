@@ -3,6 +3,10 @@
     "bus": {
       "command": "python3",
       "args": ["hooks/bus_mcp.py"]
+    },
+    "ticket": {
+      "command": "python3",
+      "args": ["hooks/ticket_mcp.py"]
     }
   }
 }
