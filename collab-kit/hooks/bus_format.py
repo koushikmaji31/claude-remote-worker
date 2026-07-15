@@ -11,6 +11,21 @@ try:
     msgs = json.load(sys.stdin).get("messages", [])
 except Exception:
     msgs = []
+
+
+def _silent(m):
+    """Roster/presence churn the developer shouldn't be interrupted for. The
+    agent can still learn who's online on demand via bus_who — these events just
+    never wake the session or print in the terminal."""
+    if m.get("from") == "bus-server":                      # presence/deaf alerts
+        return True
+    if "is online (new Claude session joined" in m.get("text", ""):  # joins
+        return True
+    return False
+
+
+# Drop silent events; if nothing actionable remains, surface nothing.
+msgs = [m for m in msgs if not _silent(m)]
 if not msgs:
     sys.exit(0)
 
