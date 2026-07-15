@@ -2,7 +2,7 @@
   "mcpServers": {
     "bus": {
       "command": "python3",
-      "args": ["app/bus_mcp.py"]
+      "args": ["hooks/bus_mcp.py"]
     }
   }
 }

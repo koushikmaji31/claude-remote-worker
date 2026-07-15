@@ -50,7 +50,7 @@ fi
 printf '%s' "$name" > "$namefile"
 # Register on the bus so broadcasts reach us (does NOT consume queued messages)
 curl -s -m 3 "${BUS_AUTH[@]}" -X POST "$BUS_URL/register?name=$name&room=$BUS_ROOM" >/dev/null 2>&1
-# Announce ourselves (within our room) so every other session learns our name automatically
+# Announce ourselves so every other session learns our name automatically
 curl -s -m 3 "${BUS_AUTH[@]}" "$BUS_URL/send" -H 'Content-Type: application/json' \
   -d "{\"sender\":\"$name\",\"to\":null,\"room\":\"$BUS_ROOM\",\"text\":\"[$name] is online (new Claude session joined the group).\"}" >/dev/null 2>&1
 online=$(curl -s -m 3 "${BUS_AUTH[@]}" "$BUS_URL/who?room=$BUS_ROOM" | python3 -c 'import sys,json;print(", ".join(json.load(sys.stdin).get("clients",[])))' 2>/dev/null)
