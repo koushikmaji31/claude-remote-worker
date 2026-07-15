@@ -25,11 +25,16 @@ src=$(echo "$tmp"/*/collab-kit)
 mkdir -p hooks .claude
 cp "$src"/hooks/* hooks/
 cp "$src"/.mcp.json .mcp.json
-# Merge-friendly: only write settings.json if the project doesn't have one
+# Wire the hooks: if the repo already has a settings.json, MERGE the bus hook
+# entries into it (idempotent) instead of skipping — otherwise a repo with its
+# own settings never auto-joins the bus.
 if [ -f .claude/settings.json ]; then
-  echo "NOTE: .claude/settings.json already exists — NOT overwritten."
-  echo "      Add the hook entries from $src/.claude/settings.json manually if needed."
-  cp "$src"/.claude/settings.json .claude/settings.bus.json
+  if python3 "$src"/hooks/merge_settings.py .claude/settings.json "$src"/.claude/settings.json; then
+    :
+  else
+    echo "NOTE: could not auto-merge .claude/settings.json — wrote .claude/settings.bus.json to merge manually."
+    cp "$src"/.claude/settings.json .claude/settings.bus.json
+  fi
 else
   cp "$src"/.claude/settings.json .claude/settings.json
 fi
