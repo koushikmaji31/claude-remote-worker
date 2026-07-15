@@ -264,3 +264,77 @@ def recv(name: str, timeout: int = 25, room: str = ""):
         if time.time() >= deadline:
             return {"messages": []}
         time.sleep(0.3)
+
+
+# ============================================================
+# Merge-conflict early-warning (folded into the bus so it rides the same tunnel
+# + token auth). Each machine POSTs its pending footprint (touched line ranges
+# per file vs the shared base) for its project; we return any OTHER machine in
+# the same project whose ranges overlap — a merge conflict forming in real time.
+# State is in-memory and keyed by (project, machine); a report replaces that
+# machine's footprint. Project = the bus room (invite code); no 'global'/empty.
+# ============================================================
+_diff_state = {}          # _diff_state[project][machine] = {"base_sha", "files"}
+_diff_lock = threading.Lock()
+
+
+class DiffReport(BaseModel):
+    project: str = ""
+    machine: str = ""
+    base_sha: Optional[str] = None
+    files: dict = {}       # {path: [[start,end], ...]} on the new/working-tree side
+
+
+class DiffClear(BaseModel):
+    project: str = ""
+    machine: str = ""
+
+
+def _ranges_overlap(a, b):
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+def _find_conflicts(project, reporter, files):
+    out = []
+    for machine, other in _diff_state.get(project, {}).items():
+        if machine == reporter:
+            continue
+        ofiles = other.get("files", {})
+        for path, mine in files.items():
+            theirs = ofiles.get(path)
+            if not theirs:
+                continue
+            for mr in mine:
+                for tr in theirs:
+                    if _ranges_overlap(mr, tr):
+                        out.append({"machine": machine, "file": path,
+                                    "your_lines": mr, "their_lines": tr,
+                                    "their_base_sha": other.get("base_sha")})
+    return out
+
+
+@app.post("/diff/report")
+def diff_report(req: DiffReport):
+    _require_room(req.project)
+    if not req.machine:
+        raise HTTPException(status_code=400, detail="machine required")
+    with _diff_lock:
+        conflicts = _find_conflicts(req.project, req.machine, req.files or {})
+        _diff_state.setdefault(req.project, {})[req.machine] = {
+            "base_sha": req.base_sha, "files": req.files or {}}
+    return {"ok": True, "conflicts": conflicts}
+
+
+@app.post("/diff/clear")
+def diff_clear(req: DiffClear):
+    _require_room(req.project)
+    with _diff_lock:
+        _diff_state.get(req.project, {}).pop(req.machine, None)
+    return {"ok": True}
+
+
+@app.get("/diff/state")
+def diff_state(project: str = ""):
+    _require_room(project)
+    with _diff_lock:
+        return {"project": project, "state": _diff_state.get(project, {})}
