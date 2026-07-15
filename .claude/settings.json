@@ -24,6 +24,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/hooks/post_todo.sh\"",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
