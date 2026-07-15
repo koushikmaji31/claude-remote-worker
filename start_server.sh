@@ -71,9 +71,24 @@ free_port "$APP_PORT"
 nohup python3 -m uvicorn app.platform:app --host 127.0.0.1 --port "$APP_PORT" > logs/backend.log 2>&1 &
 
 # --- 3. chat bus on :$BUS_PORT ----------------------------------------------
+# Persist a REAL bus token in .env and make it authoritative: the bus reads
+# env BUS_TOKEN first, and we mirror it to /tmp/claude-bus/token so the platform
+# hands out the same token in join commands. This stops an ad-hoc/test value in
+# the /tmp file from silently becoming the production secret.
+if [[ -z "${BUS_TOKEN:-}" || "${BUS_TOKEN:-}" == "testbustoken123" ]]; then
+  if command -v openssl >/dev/null 2>&1; then BUS_TOKEN="$(openssl rand -hex 16)"
+  else BUS_TOKEN="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"; fi
+  export BUS_TOKEN
+  # replace any prior BUS_TOKEN line in .env, then append the new one
+  [[ -f .env ]] && grep -v '^BUS_TOKEN=' .env > .env.tmp 2>/dev/null && mv .env.tmp .env
+  echo "BUS_TOKEN=$BUS_TOKEN" >> .env
+  say "Generated a new BUS_TOKEN (saved to .env)"
+fi
+mkdir -p /tmp/claude-bus
+printf '%s' "$BUS_TOKEN" > /tmp/claude-bus/token
 say "Starting chat bus on :$BUS_PORT ..."
 free_port "$BUS_PORT"
-nohup python3 -m uvicorn app.chat_server:app --host 127.0.0.1 --port "$BUS_PORT" > logs/bus.log 2>&1 &
+BUS_TOKEN="$BUS_TOKEN" nohup python3 -m uvicorn app.chat_server:app --host 127.0.0.1 --port "$BUS_PORT" > logs/bus.log 2>&1 &
 
 # --- 4. remote worker on :$WORKER_PORT (never :8787 — jobhunt owns that) -----
 if [[ -z "${WORKER_TOKEN:-}" ]]; then
