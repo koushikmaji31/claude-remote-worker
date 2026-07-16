@@ -209,6 +209,9 @@ export default function Project() {
               <NavIcon id={n.id} />
               <span>{n.label}</span>
               {n.id === 'members' && <span className="nav-count">{memberCount}</span>}
+              {n.id === 'activity' && activity?.needs_you > 0 && (
+                <span className="nav-count alert">{activity.needs_you}</span>
+              )}
             </button>
           ))}
         </nav>
