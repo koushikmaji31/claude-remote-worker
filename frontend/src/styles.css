@@ -1159,3 +1159,7 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .is-done .board-card-titlebtn { color: var(--text-muted); text-decoration: line-through; }
 .board-card-edit { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
 .board-card-editrow { display: flex; gap: var(--sp-2); justify-content: flex-end; align-items: center; }
+
+/* Board edit fields should match the card's type scale, not the 16px default */
+.board-card-edit input, .board-new input { font-size: 13px; font-weight: 600; padding: 7px 10px; }
+.board-card-edit textarea, .board-new textarea { font-size: 12.5px; line-height: 1.5; padding: 8px 10px; }
