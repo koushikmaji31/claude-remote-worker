@@ -1168,11 +1168,12 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
    Discussion — clean, Google-Chat-style (grouped rows, bubbles)
    ============================================================ */
 .avatar.sm { width: 28px; height: 28px; font-size: 11px; }
-.chat-wrap { display: flex; flex-direction: column; }
+/* Flat, full-height chat (no card wrapper, no inner header — the page header
+   already says "Discussion"). Log scrolls; composer pinned at the bottom. */
+.chat { display: flex; flex-direction: column; height: calc(100vh - 172px); min-height: 400px; }
 .chat-log {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: var(--sp-4) var(--sp-4) var(--sp-2);
-  max-height: 460px; overflow-y: auto;
+  flex: 1; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--sp-2) 0; overflow-y: auto;
 }
 .chat-empty { margin: var(--sp-2) 0; }
 
@@ -1206,7 +1207,7 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 /* Composer */
 .chat-composer {
   display: flex; align-items: flex-end; gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-3) 0 0;
   border-top: 1px solid var(--border);
 }
 .chat-attach {

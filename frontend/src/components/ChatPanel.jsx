@@ -124,16 +124,10 @@ export default function ChatPanel({ pid, me }) {
   }
 
   return (
-    <section className="panel chat">
-      <header className="panel-head">
-        <h2>Discussion</h2>
-        <span className="faint">{messages.length} message{messages.length === 1 ? '' : 's'}</span>
-      </header>
+    <div className="chat">
+      {error && <div className="alert error" style={{ marginBottom: 'var(--sp-2)' }}>{error}</div>}
 
-      <div className="chat-wrap">
-        {error && <div className="alert error" style={{ margin: 'var(--sp-3) var(--sp-4) 0' }}>{error}</div>}
-
-        <div className="chat-log" ref={logRef}>
+      <div className="chat-log" ref={logRef}>
           {messages.length === 0 && <p className="muted chat-empty">No messages yet. Start the conversation.</p>}
           {messages.map((m, i) => {
             const mine = me && m.sender === me.name
@@ -190,7 +184,6 @@ export default function ChatPanel({ pid, me }) {
           />
           <button type="submit" className="btn sm chat-send" disabled={(!text.trim() && !image) || attaching}>Post</button>
         </form>
-      </div>
-    </section>
+    </div>
   )
 }
