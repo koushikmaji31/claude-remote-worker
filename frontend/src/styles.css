@@ -727,3 +727,38 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .gh-file { margin: var(--sp-2) 0; }
 .gh-file summary { cursor: pointer; font-size: 13px; padding: 4px 0; }
 .gh-file .git-diff { margin-top: var(--sp-2); }
+
+/* Phase 3: write forms (create branch/PR/issue) + comment boxes */
+.gh-new-bar { display: flex; justify-content: flex-end; margin-bottom: var(--sp-2); }
+.gh-form {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-3); margin-bottom: var(--sp-3);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md);
+}
+.gh-form-row { display: flex; gap: var(--sp-2); }
+.gh-form-row .gh-field-label { flex: 1; }
+.gh-field-label {
+  display: flex; align-items: center; gap: var(--sp-2);
+  font-size: 12.5px; color: var(--text-faint);
+}
+.gh-field-label .gh-branch-input { flex: 1; }
+.gh-textarea {
+  width: 100%; resize: vertical; font: inherit;
+  padding: var(--sp-2); border: 1px solid var(--border);
+  border-radius: var(--r-sm); background: var(--surface); color: var(--text);
+}
+.gh-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+.gh-comment {
+  margin-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2);
+}
+
+/* Phase 4: webhook setup + delivery log */
+.gh-hook-url {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm);
+}
+.gh-hook-url code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 12.5px; }
+.gh-hook-meta { margin: 0 0 var(--sp-2); padding-left: var(--sp-4); font-size: 12.5px; }
+.gh-hook-meta li { margin: 2px 0; }
+.gh-hook-h3 { font-size: 13px; margin: 0; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; }

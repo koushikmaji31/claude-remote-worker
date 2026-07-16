@@ -1,7 +1,8 @@
 # GitHub Integration — Design & Roadmap
 
 > Planning document for adding **GitHub integration** to the Team Collab Platform.
-> Status: **proposal / not yet implemented.** No code in this repo depends on it yet.
+> Status: **in progress.** Phases 0–4 are built (PAT auth · repo link · live reads ·
+> in-product writes · webhooks → Discussion). Phase 5 (Claude automation) is still design-only.
 
 ## TL;DR
 
@@ -75,19 +76,34 @@ Grouped from foundational to agentic. Each tier depends on the ones above it.
 
 ```
                           READY (build on it)              GAP (the integration work)
-Auth / users        [x] token auth, users table      ->   [ ] GitHub OAuth link, token storage
-Projects / roles    [x] projects, members, admin      ->   [ ] repo_links table, per-repo perms
-Discussion chat     [x] text+image, free-text sender  ->   [ ] "github" bot messages from events
-Git feature         [x] GitPanel + /rpc (LOCAL git)   ->   [ ] swap to GitHub API (remote)
+Auth / users        [x] token auth, users table      ->   [x] GitHub PAT link, sealed token storage
+Projects / roles    [x] projects, members, admin      ->   [x] repo_links table, admin-gated link
+Discussion chat     [x] text+image, free-text sender  ->   [x] "github" bot messages from webhooks
+Git feature         [x] GitPanel + /rpc (LOCAL git)   ->   [x] GitHubPanel on GitHub API (remote)
 Claude worker       [x] headless, can edit/commit     ->   [ ] give it an App token to push/comment
-Public URL          [x] ngrok via start_server.sh     ->   [ ] OAuth callback + webhook routes
-Frontend shell      [x] sidebar nav, panels           ->   [ ] PR/Issues views, Connect-GitHub UI
-Async processing    [~] none (all synchronous)        ->   [ ] event queue for webhooks/worker
+Public URL          [x] ngrok via start_server.sh     ->   [x] webhook route (OAuth callback still N/A: PAT)
+Frontend shell      [x] sidebar nav, panels           ->   [x] Branches/PRs/Issues + write forms + webhook UI
+Async processing    [~] synchronous, dedup inbox      ->   [ ] real queue (webhook writes are fast + idempotent)
 ```
 
-**Reading:** ~60% of the *scaffolding* exists. The genuinely new build is GitHub auth, an API
-client, a webhook receiver + queue, and the repo-link data model. The worker — the hard part of
-"AI acts on your repo" — is already there.
+**Reading:** the read/write half plus event ingestion are done. The remaining new build is wiring the
+worker (the hard part of "AI acts on your repo" — which already exists) to the webhook events.
+
+### Progress by phase
+
+| Phase | Status | Landed in |
+|---|---|---|
+| **0** Decide auth model → **PAT** | ✅ done | (design) |
+| **1** Identity & link (`gh_identities`, `repo_links`, sealed tokens, Connect/Link UI) | ✅ done | `1b53041` |
+| **2** Read (branches / PRs / issues / PR diff + mergeability, TTL cache, rate-limit handling) | ✅ done | `a907535` |
+| **3** Write (create branch / open PR / create issue / comment on PR+issue; member-gated, attributed to the requester's own token) | ✅ done | *this branch* |
+| **4** Webhooks → Discussion (`gh_events` inbox, HMAC verify, dedup by delivery id, push/PR/issue/comment → `github` bot message; setup + delivery-log UI) | ✅ done | *this branch* |
+| **5** Claude automation (agentic) | ⬜ design-only | — |
+
+**Phase 4 config:** set `GITHUB_WEBHOOK_SECRET` on the server to enable HMAC signature
+verification (unset ⇒ dev mode: deliveries accepted but unverified, flagged in the UI). The
+webhook URL is `<PUBLIC_BASE_URL>/api/github/webhook`. Add it on the repo (Settings → Webhooks,
+content type `application/json`) subscribed to push / pull_request / issues / issue_comment.
 
 ---
 

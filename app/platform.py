@@ -1,4 +1,7 @@
 """Team Collab Platform backend — see docs/API_CONTRACT.md (v1)."""
+import hashlib
+import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -115,6 +118,17 @@ def init_db():
             default_branch TEXT,
             linked_by INTEGER REFERENCES users(id),
             linked_at REAL NOT NULL
+        );
+        -- Webhook inbox (Phase 4). delivery_id (GitHub's X-GitHub-Delivery) is unique for
+        -- idempotency; project_id is resolved from the payload repo, NULL if no project matches.
+        CREATE TABLE IF NOT EXISTS gh_events(
+            id INTEGER PRIMARY KEY,
+            delivery_id TEXT UNIQUE,
+            event_type TEXT NOT NULL,
+            action TEXT,
+            project_id INTEGER REFERENCES projects(id),
+            summary TEXT,
+            received_at REAL NOT NULL
         );
         """
     )
@@ -813,6 +827,290 @@ def github_pull_detail(pid: int, number: int, user=Depends(current_user)):
                 "additions": f["additions"], "deletions": f["deletions"], "patch": f.get("patch", ""),
             } for f in files],
             "ratelimit": rl,
+        }
+    finally:
+        conn.close()
+
+
+# ---------- GitHub integration (Phase 3: write) ----------
+
+def _cache_invalidate(*keys):
+    """Drop cached read results so the next poll reflects a just-made write."""
+    for k in keys:
+        _GH_CACHE.pop(k, None)
+
+
+def _gh_write(token: str, method: str, path: str, body=None):
+    """POST/PATCH the GitHub API, mapping auth/permission/validation errors to HTTP. Returns json."""
+    try:
+        status, data, _ = _gh_api(token, method, path, body=body)
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach GitHub: {e}")
+    if status == 401:
+        raise HTTPException(401, "GitHub token invalid or expired")
+    if status == 403:
+        msg = data.get("message", "") if isinstance(data, dict) else ""
+        raise HTTPException(403, f"GitHub denied the write — token likely lacks write scope. {msg}".strip())
+    if status == 404:
+        raise HTTPException(404, "Not found on GitHub (check repo access / token scope)")
+    if status == 422:
+        # Validation error, e.g. branch/PR already exists, no diff between branches.
+        msg = data.get("message", "validation failed") if isinstance(data, dict) else "validation failed"
+        errs = data.get("errors") if isinstance(data, dict) else None
+        if errs:
+            parts = [e.get("message") or e.get("code") for e in errs if isinstance(e, dict)]
+            parts = [p for p in parts if p]
+            if parts:
+                msg = f"{msg}: " + "; ".join(parts)
+        raise HTTPException(422, msg)
+    if status >= 400:
+        detail = data.get("message", "unknown") if isinstance(data, dict) else "unknown"
+        raise HTTPException(400, f"GitHub error ({status}): {detail}")
+    return data
+
+
+def _writer_context(conn, pid: int, user_id: int):
+    """Resolve (owner, repo, default_branch, token) for a write, attributed to the requester."""
+    row = _repo_link_row(conn, pid)
+    if not row:
+        raise HTTPException(400, "No GitHub repo linked to this project")
+    token = _user_gh_token(conn, user_id)  # requester's own token → writes are attributed to them
+    return row["owner"], row["repo"], (row["default_branch"] or "main"), token
+
+
+class BranchCreateIn(BaseModel):
+    name: str
+    from_ref: str = ""  # branch to fork from; defaults to the repo's default branch
+
+
+@app.post("/api/projects/{pid}/github/branches")
+def github_create_branch(pid: int, body: BranchCreateIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        name = body.name.strip().lstrip("/")
+        if not name:
+            raise HTTPException(422, "Branch name is required")
+        owner, repo, default_branch, token = _writer_context(conn, pid, user["id"])
+        base = body.from_ref.strip() or default_branch
+        status, ref, _ = _gh_api(token, "GET", f"/repos/{owner}/{repo}/git/ref/heads/{base}")
+        if status == 401:
+            raise HTTPException(401, "GitHub token invalid or expired")
+        if status != 200:
+            raise HTTPException(400, f"Base branch '{base}' not found on GitHub")
+        sha = ref["object"]["sha"]
+        _gh_write(token, "POST", f"/repos/{owner}/{repo}/git/refs",
+                  {"ref": f"refs/heads/{name}", "sha": sha})
+        _cache_invalidate(("branches", pid))
+        return {"created": True, "name": name, "sha": sha, "from": base}
+    finally:
+        conn.close()
+
+
+class PullCreateIn(BaseModel):
+    title: str
+    head: str
+    base: str = ""  # defaults to the repo's default branch
+    body: str = ""
+    draft: bool = False
+
+
+@app.post("/api/projects/{pid}/github/pulls")
+def github_create_pull(pid: int, body: PullCreateIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        title, head = body.title.strip(), body.head.strip()
+        if not title or not head:
+            raise HTTPException(422, "Title and head branch are required")
+        owner, repo, default_branch, token = _writer_context(conn, pid, user["id"])
+        base = body.base.strip() or default_branch
+        data = _gh_write(token, "POST", f"/repos/{owner}/{repo}/pulls",
+                         {"title": title, "head": head, "base": base,
+                          "body": body.body, "draft": body.draft})
+        _cache_invalidate(("pulls", pid))
+        return {
+            "created": True, "number": data["number"], "title": data["title"],
+            "head": head, "base": base, "draft": data.get("draft", False),
+            "html_url": data["html_url"],
+        }
+    finally:
+        conn.close()
+
+
+class IssueCreateIn(BaseModel):
+    title: str
+    body: str = ""
+    labels: list[str] = []
+
+
+@app.post("/api/projects/{pid}/github/issues")
+def github_create_issue(pid: int, body: IssueCreateIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(422, "Title is required")
+        owner, repo, _default, token = _writer_context(conn, pid, user["id"])
+        payload = {"title": title, "body": body.body}
+        labels = [l.strip() for l in body.labels if l.strip()]
+        if labels:
+            payload["labels"] = labels
+        data = _gh_write(token, "POST", f"/repos/{owner}/{repo}/issues", payload)
+        _cache_invalidate(("issues", pid))
+        return {
+            "created": True, "number": data["number"], "title": data["title"],
+            "html_url": data["html_url"],
+        }
+    finally:
+        conn.close()
+
+
+class CommentIn(BaseModel):
+    body: str
+
+
+@app.post("/api/projects/{pid}/github/issues/{number}/comments")
+def github_add_comment(pid: int, number: int, body: CommentIn, user=Depends(current_user)):
+    """Comment on an issue or PR (GitHub treats PRs as issues for the comments endpoint)."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        text = body.body.strip()
+        if not text:
+            raise HTTPException(422, "Comment body is required")
+        owner, repo, _default, token = _writer_context(conn, pid, user["id"])
+        data = _gh_write(token, "POST", f"/repos/{owner}/{repo}/issues/{number}/comments",
+                         {"body": text})
+        _cache_invalidate(("issues", pid))  # refresh comment counts on the issues list
+        return {"created": True, "id": data.get("id"), "html_url": data.get("html_url")}
+    finally:
+        conn.close()
+
+
+# ---------- GitHub integration (Phase 4: webhooks -> Discussion) ----------
+
+# HMAC secret shared with the GitHub webhook config. When unset we cannot verify
+# signatures, so we run in dev mode (accept + flag via the info endpoint), mirroring
+# the plaintext-token fallback above.
+GH_WEBHOOK_SECRET = os.environ.get("GITHUB_WEBHOOK_SECRET", "").strip()
+
+
+def _webhook_url() -> str:
+    base = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8900").rstrip("/")
+    return f"{base}/api/github/webhook"
+
+
+def _verify_gh_signature(raw: bytes, signature: str) -> bool:
+    """Verify GitHub's X-Hub-Signature-256 (HMAC-SHA256) against GITHUB_WEBHOOK_SECRET."""
+    if not GH_WEBHOOK_SECRET:
+        return True  # dev mode: no secret configured -> cannot verify (surfaced in the UI)
+    if not signature.startswith("sha256="):
+        return False
+    mac = hmac.new(GH_WEBHOOK_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest("sha256=" + mac, signature)
+
+
+def _format_gh_event(event: str, action, payload: dict):
+    """Render a webhook payload as a one-line Discussion message. None => don't post."""
+    repo = (payload.get("repository") or {}).get("full_name", "the repo")
+    who = (payload.get("sender") or {}).get("login", "someone")
+    if event == "ping":
+        return f"GitHub webhook connected to {repo}."
+    if event == "push":
+        ref = (payload.get("ref") or "").replace("refs/heads/", "")
+        commits = payload.get("commits") or []
+        if not commits:
+            return None  # branch create/delete/tag push -> skip the noise
+        head = (payload.get("head_commit") or {}).get("message", "").split("\n")[0]
+        tail = f' — "{head}"' if head else ""
+        return f"{who} pushed {len(commits)} commit{'s' if len(commits) != 1 else ''} to {ref} on {repo}{tail}"
+    if event == "pull_request":
+        pr = payload.get("pull_request") or {}
+        num, title = pr.get("number"), pr.get("title", "")
+        if action == "closed" and pr.get("merged"):
+            return f'{who} merged PR #{num} "{title}" on {repo}'
+        verbs = {"opened": "opened", "reopened": "reopened", "closed": "closed", "ready_for_review": "marked ready"}
+        if action in verbs:
+            return f'{who} {verbs[action]} PR #{num} "{title}" on {repo}'
+        return None
+    if event == "issues":
+        iss = payload.get("issue") or {}
+        if action in ("opened", "reopened", "closed"):
+            return f'{who} {action} issue #{iss.get("number")} "{iss.get("title", "")}" on {repo}'
+        return None
+    if event == "issue_comment" and action == "created":
+        iss = payload.get("issue") or {}
+        body = (payload.get("comment") or {}).get("body", "").split("\n")[0][:140]
+        kind = "PR" if iss.get("pull_request") else "issue"
+        return f'{who} commented on {kind} #{iss.get("number")} on {repo}: {body}'
+    return None
+
+
+@app.post("/api/github/webhook")
+async def github_webhook(request: Request):
+    """Public endpoint GitHub POSTs to. Verifies HMAC, then mirrors the event into the
+    linked project's Discussion as a 'github' bot message. Returns 200 fast; dedupes by delivery id."""
+    raw = await request.body()
+    if not _verify_gh_signature(raw, request.headers.get("X-Hub-Signature-256", "")):
+        raise HTTPException(401, "Invalid webhook signature")
+    event = request.headers.get("X-GitHub-Event", "")
+    delivery = request.headers.get("X-GitHub-Delivery", "")
+    try:
+        payload = json.loads(raw or b"{}")
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON payload")
+    action = payload.get("action")
+
+    conn = db()
+    try:
+        # GitHub retries deliveries; skip anything already recorded (idempotency).
+        if delivery and conn.execute("SELECT 1 FROM gh_events WHERE delivery_id=?", (delivery,)).fetchone():
+            return {"ok": True, "duplicate": True}
+        # Resolve the repo to a project via repo_links.
+        full = (payload.get("repository") or {}).get("full_name", "")
+        pid = None
+        if "/" in full:
+            owner, repo = full.split("/", 1)
+            row = conn.execute(
+                "SELECT project_id FROM repo_links WHERE owner=? AND repo=?", (owner, repo)
+            ).fetchone()
+            pid = row["project_id"] if row else None
+        summary = _format_gh_event(event, action, payload)
+        if pid is not None and summary:
+            conn.execute(
+                "INSERT INTO messages(project_id, sender, text, image, ts) VALUES(?,?,?,?,?)",
+                (pid, "github", summary, None, time.time()),
+            )
+        conn.execute(
+            """INSERT OR IGNORE INTO gh_events(delivery_id, event_type, action, project_id, summary, received_at)
+               VALUES(?,?,?,?,?,?)""",
+            (delivery or None, event, action, pid, summary, time.time()),
+        )
+        conn.commit()
+        return {"ok": True, "posted": bool(pid and summary), "project_id": pid}
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects/{pid}/github/webhook")
+def github_webhook_info(pid: int, user=Depends(current_user)):
+    """Setup details + recent delivery log so admins can wire up and confirm the webhook."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        recent = conn.execute(
+            """SELECT event_type, action, summary, received_at FROM gh_events
+               WHERE project_id=? ORDER BY id DESC LIMIT 10""",
+            (pid,),
+        ).fetchall()
+        return {
+            "webhook_url": _webhook_url(),
+            "secret_configured": bool(GH_WEBHOOK_SECRET),
+            "content_type": "application/json",
+            "subscribe": "push, pull_request, issues, issue_comment",
+            "recent": [dict(r) for r in recent],
         }
     finally:
         conn.close()

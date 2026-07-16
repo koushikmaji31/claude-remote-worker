@@ -25,3 +25,19 @@ export const ghBranches = (pid) => api(`/api/projects/${pid}/github/branches`)
 export const ghPulls = (pid) => api(`/api/projects/${pid}/github/pulls`)
 export const ghIssues = (pid) => api(`/api/projects/${pid}/github/issues`)
 export const ghPullDetail = (pid, number) => api(`/api/projects/${pid}/github/pulls/${number}`)
+
+// --- Write (Phase 3): create branches / PRs / issues, comment ---
+export const ghCreateBranch = (pid, name, fromRef) =>
+  api(`/api/projects/${pid}/github/branches`, { method: 'POST', body: { name, from_ref: fromRef } })
+
+export const ghCreatePull = (pid, data) =>
+  api(`/api/projects/${pid}/github/pulls`, { method: 'POST', body: data })
+
+export const ghCreateIssue = (pid, data) =>
+  api(`/api/projects/${pid}/github/issues`, { method: 'POST', body: data })
+
+export const ghComment = (pid, number, body) =>
+  api(`/api/projects/${pid}/github/issues/${number}/comments`, { method: 'POST', body: { body } })
+
+// --- Webhooks (Phase 4): setup info + recent deliveries ---
+export const ghWebhookInfo = (pid) => api(`/api/projects/${pid}/github/webhook`)
