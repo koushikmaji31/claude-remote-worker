@@ -20,6 +20,7 @@ function initials(name) {
 
 const NAV = [
   { id: 'overview', label: 'Overview' },
+  { id: 'activity', label: 'Activity' }, // signal feed across the project's agents
   { id: 'discussion', label: 'Discussion' },
   { id: 'branches', label: 'Branches' }, // GitHub-backed (graph, PRs, issues)
   { id: 'ticket', label: 'Ticket' },
