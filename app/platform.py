@@ -1364,6 +1364,105 @@ def get_ticket(pid: int, user=Depends(current_user)):
         conn.close()
 
 
+# ---------- Activity feed (signal feed across a project's agents) ----------
+# Aggregates signals already flowing on the platform + bus into one
+# attention-ranked stream: blockers (conflict-guard), stuck agents (derived),
+# progress (TodoWrite bridge), and claims/pushes (bus broadcasts). The single
+# `needs_you` count is the product: 0 = keep working, >0 = look.
+ACTIVITY_STUCK_SECS = int(os.environ.get("ACTIVITY_STUCK_SECS", "600"))  # 10 min
+
+
+def _bus_local_get(path: str):
+    """GET a JSON endpoint on the local chat bus (same host → trusted, no token)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8899" + path, timeout=3) as r:
+            return json.loads(r.read().decode())
+    except Exception:
+        return {}
+
+
+def _ranges_overlap(a, b):
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+@app.get("/api/projects/{pid}/activity")
+def project_activity(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        row = conn.execute("SELECT invite_code FROM projects WHERE id=?", (pid,)).fetchone()
+        room = row["invite_code"] if row else None
+        state = _ticket_state(conn, pid)
+    finally:
+        conn.close()
+
+    now = time.time()
+    events = []
+
+    # --- Blockers: overlapping live edits (conflict-guard on the bus) ---
+    diff = _bus_local_get(f"/diff/state?project={room}").get("state", {}) if room else {}
+    machines = list(diff.items())
+    for i in range(len(machines)):
+        for j in range(i + 1, len(machines)):
+            m1, d1 = machines[i]
+            m2, d2 = machines[j]
+            f1, f2 = d1.get("files", {}), d2.get("files", {})
+            for path in set(f1) & set(f2):
+                if any(_ranges_overlap(r1, r2) for r1 in f1[path] for r2 in f2[path]):
+                    events.append({
+                        "type": "blocker", "severity": "high", "ts": now,
+                        "agents": [m1, m2], "file": path,
+                        "title": f"{m1} & {m2} are both editing {path}",
+                        "detail": "Overlapping edits — a merge conflict is forming.",
+                    })
+
+    # --- Progress + stuck: derived from each agent's task list ---
+    for a in state.get("agents", []):
+        tasks = a.get("tasks", [])
+        if not tasks:
+            continue
+        done = sum(1 for t in tasks if t.get("status") == "done")
+        doing = next((t.get("text") for t in tasks if t.get("status") == "doing"), None)
+        unfinished = any(t.get("status") != "done" for t in tasks)
+        ts = a.get("ts") or now
+        age = now - ts
+        if unfinished and age > ACTIVITY_STUCK_SECS:
+            events.append({
+                "type": "stuck", "severity": "high", "ts": ts, "agents": [a["agent"]],
+                "title": f"{a['agent']} may be stuck",
+                "detail": f"No task update in {int(age // 60)} min · {done}/{len(tasks)} done"
+                          + (f" · was: {doing}" if doing else ""),
+            })
+        else:
+            events.append({
+                "type": "progress", "severity": "low", "ts": ts, "agents": [a["agent"]],
+                "title": f"{a['agent']} · {done}/{len(tasks)} tasks done",
+                "detail": (f"now: {doing}" if doing else "all tasks complete"),
+            })
+
+    # --- Claims / pushes: recent broadcasts on the bus ---
+    if room:
+        for m in _bus_local_get(f"/history?room={room}").get("messages", [])[-120:]:
+            if m.get("to"):  # broadcasts only
+                continue
+            text = (m.get("text") or "").strip()
+            up = text.upper()
+            if up.startswith("CLAIM"):
+                events.append({"type": "claim", "severity": "low", "ts": m.get("ts"),
+                               "agents": [m.get("from")], "title": f"{m.get('from')} claimed a path",
+                               "detail": text[:200]})
+            elif up.startswith("PUSHED") or up.startswith("PUSH "):
+                events.append({"type": "push", "severity": "low", "ts": m.get("ts"),
+                               "agents": [m.get("from")], "title": f"{m.get('from')} pushed",
+                               "detail": text[:200]})
+
+    sev = {"high": 0, "med": 1, "low": 2}
+    events.sort(key=lambda e: (sev.get(e.get("severity"), 3), -(e.get("ts") or 0)))
+    needs_you = sum(1 for e in events if e.get("severity") == "high")
+    return {"needs_you": needs_you, "events": events[:50]}
+
+
 @app.post("/api/projects/{pid}/ticket/ticket")
 def set_ticket_ticket(pid: int, body: TicketIn, user=Depends(current_user)):
     conn = db()
