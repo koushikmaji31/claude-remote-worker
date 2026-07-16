@@ -581,17 +581,20 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 .main-actions { display: flex; gap: var(--sp-2); }
 .main-body { padding: var(--sp-6); width: 100%; }
 
-/* ---------- Panels (replace heavy cards) ---------- */
+/* ---------- Panels — flat sections (no card box), like Discussion ---------- */
 .panel {
-  border: 1px solid var(--border); border-radius: var(--r-lg);
-  background: var(--surface); overflow: hidden; margin-bottom: var(--sp-4);
+  border: none; border-radius: 0; background: transparent;
+  overflow: visible; margin-bottom: var(--sp-6);
 }
 .panel-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border);
+  padding: 0 0 var(--sp-3); border-bottom: none;
 }
-.panel-head h2 { font-size: 14px; font-weight: 640; letter-spacing: -0.01em; margin: 0; }
-.panel-body { padding: var(--sp-5); }
+.panel-head h2 {
+  font-size: 12px; font-weight: 650; letter-spacing: 0.03em; text-transform: uppercase;
+  color: var(--text-muted); margin: 0;
+}
+.panel-body { padding: 0; }
 
 .tag {
   font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em;
@@ -991,7 +994,7 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
    children that remount after load (bars, list rows). The fixed glow behind
    the translucency carries the liquid look; real blur lives on the chrome
    surfaces below, where content actually scrolls underneath. */
-.panel, .ov-stat, .ov-panel, .ov-tile, .ov-timeline, .ov-attn a, .stat {
+.ov-stat, .ov-panel, .ov-tile, .ov-timeline, .ov-attn a, .stat {
   background: var(--glass);
   border-color: var(--glass-border);
 }
