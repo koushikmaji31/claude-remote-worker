@@ -135,6 +135,13 @@ export default function Project() {
     } catch (err) { setError(err.message) }
   }
 
+  async function setManage(uid, value) {
+    try {
+      await api(`/api/projects/${pid}/members/${uid}/can-manage`, { method: 'POST', body: { can_manage: value } })
+      loadProject()
+    } catch (err) { setError(err.message) }
+  }
+
   function copyInvite() {
     const link = `${window.location.origin}/?join=${project.invite_code}`
     navigator.clipboard.writeText(link).then(() => {
@@ -238,7 +245,7 @@ export default function Project() {
 
           {view === 'discussion' && <ChatPanel pid={pid} me={me} />}
 
-          {view === 'branches' && <GitHubPanel pid={pid} isAdmin={isAdmin} />}
+          {view === 'branches' && <GitHubPanel pid={pid} canManage={!!project.can_manage} />}
 
           {view === 'ticket' && <TicketPanel pid={pid} me={me} />}
 
@@ -252,12 +259,16 @@ export default function Project() {
                       <span className="member-meta">
                         <span className="member-name">
                           {m.name} <span className={`badge ${m.role}`}>{m.role}</span>
+                          {m.role !== 'admin' && m.can_manage && <span className="badge success">manages integrations</span>}
                         </span>
                         <span className="faint">{m.email}</span>
                       </span>
                     </span>
                     {isAdmin && m.user_id !== me.user_id && (
                       <span className="row">
+                        <button className="btn ghost sm" onClick={() => setManage(m.user_id, !m.can_manage)}>
+                          {m.can_manage ? 'Revoke manage' : 'Allow manage'}
+                        </button>
                         <button className="btn ghost sm" onClick={() => transferAdmin(m.user_id)}>Make admin</button>
                         <button className="btn danger sm" onClick={() => removeMember(m.user_id)}>Remove</button>
                       </span>

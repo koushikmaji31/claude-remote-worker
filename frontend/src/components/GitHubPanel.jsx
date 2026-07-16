@@ -269,7 +269,7 @@ function consumeOAuthResult() {
   return { result, reason }
 }
 
-export default function GitHubPanel({ pid, isAdmin }) {
+export default function GitHubPanel({ pid, canManage }) {
   const [status, setStatus] = useState(null) // null = loading
   const [repo, setRepo] = useState(null)
   const [token, setToken] = useState('')
@@ -325,7 +325,8 @@ export default function GitHubPanel({ pid, isAdmin }) {
       )}
       {error && <div className="alert error">{error}</div>}
 
-      {/* --- Identity --- */}
+      {/* --- Identity (only integration managers connect a GitHub account) --- */}
+      {canManage && (
       <section className="panel">
         <header className="panel-head">
           <h2>GitHub account</h2>
@@ -409,6 +410,7 @@ export default function GitHubPanel({ pid, isAdmin }) {
           )}
         </div>
       </section>
+      )}
 
       {/* --- Repo link --- */}
       <section className="panel">
@@ -422,11 +424,11 @@ export default function GitHubPanel({ pid, isAdmin }) {
           {repo && !repo.linked && (
             <>
               <p className="muted" style={{ marginTop: 0 }}>
-                {isAdmin
+                {canManage
                   ? 'Link a GitHub repo to this project. Validated against your connected account.'
                   : 'No repository is linked yet. Ask a project admin to link one.'}
               </p>
-              {isAdmin && (
+              {canManage && (
                 <div className="gh-row">
                   <input
                     type="text"
@@ -444,7 +446,7 @@ export default function GitHubPanel({ pid, isAdmin }) {
                   </button>
                 </div>
               )}
-              {isAdmin && !status?.connected && (
+              {canManage && !status?.connected && (
                 <p className="faint" style={{ marginTop: 8 }}>Connect your GitHub account above first.</p>
               )}
             </>
@@ -458,7 +460,7 @@ export default function GitHubPanel({ pid, isAdmin }) {
                 </a>
                 <div className="faint">default branch: {repo.default_branch || 'unknown'}</div>
               </div>
-              {isAdmin && (
+              {canManage && (
                 <button className="btn ghost sm" onClick={unlink} disabled={busy}>Unlink</button>
               )}
             </div>

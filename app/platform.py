@@ -161,6 +161,12 @@ def init_db():
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if "image" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN image TEXT")
+    # can_manage: per-member capability to connect/manage integrations
+    # (GitHub/Jira/GitLab). The project admin always can; others only if the
+    # admin grants it. Everyone else sees integrations read-only.
+    mcols = {r["name"] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
+    if "can_manage" not in mcols:
+        conn.execute("ALTER TABLE members ADD COLUMN can_manage INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -310,7 +316,7 @@ def get_project(pid: int, user=Depends(current_user)):
         proj = require_member(conn, pid, user["id"])
         members = conn.execute(
             """
-            SELECT u.id, u.name, u.email, m.role
+            SELECT u.id, u.name, u.email, m.role, m.can_manage
             FROM members m JOIN users u ON u.id=m.user_id
             WHERE m.project_id=? ORDER BY u.id
             """,
@@ -322,8 +328,12 @@ def get_project(pid: int, user=Depends(current_user)):
             "invite_code": proj["invite_code"],
             "invite_link": invite_link(proj["invite_code"]),
             "admin_id": proj["admin_id"],
+            # this caller's own capability, so the UI can gate connect controls
+            "can_manage": can_manage(conn, pid, user["id"]),
             "members": [
-                {"user_id": r["id"], "name": r["name"], "email": r["email"], "role": r["role"]}
+                {"user_id": r["id"], "name": r["name"], "email": r["email"], "role": r["role"],
+                 # admin implicitly manages; others per the granted flag
+                 "can_manage": bool(r["can_manage"]) or r["id"] == proj["admin_id"]}
                 for r in members
             ],
         }
@@ -373,6 +383,24 @@ def join(invite_code: str, user=Depends(current_user)):
         conn.close()
 
 
+def can_manage(conn, pid: int, user_id: int) -> bool:
+    """True if the user may connect/manage integrations for this project:
+    the admin always can; other members only if granted can_manage."""
+    proj = conn.execute("SELECT admin_id FROM projects WHERE id=?", (pid,)).fetchone()
+    if proj and proj["admin_id"] == user_id:
+        return True
+    row = conn.execute(
+        "SELECT can_manage FROM members WHERE project_id=? AND user_id=?", (pid, user_id)
+    ).fetchone()
+    return bool(row and row["can_manage"])
+
+
+def require_manage(conn, pid: int, user_id: int):
+    require_member(conn, pid, user_id)
+    if not can_manage(conn, pid, user_id):
+        raise HTTPException(403, "You do not have permission to manage integrations for this project")
+
+
 def require_admin(conn, pid: int, user_id: int) -> sqlite3.Row:
     proj = require_member(conn, pid, user_id)
     if proj["admin_id"] != user_id:
@@ -394,6 +422,28 @@ def remove_member(pid: int, user_id: int, user=Depends(current_user)):
             raise HTTPException(404, "Not a member")
         conn.commit()
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+class ManageIn(BaseModel):
+    can_manage: bool
+
+
+@app.post("/api/projects/{pid}/members/{user_id}/can-manage")
+def set_can_manage(pid: int, user_id: int, body: ManageIn, user=Depends(current_user)):
+    """Admin grants/revokes a member's ability to connect + manage integrations."""
+    conn = db()
+    try:
+        require_admin(conn, pid, user["id"])
+        cur = conn.execute(
+            "UPDATE members SET can_manage=? WHERE project_id=? AND user_id=?",
+            (1 if body.can_manage else 0, pid, user_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Not a member")
+        conn.commit()
+        return {"ok": True, "user_id": user_id, "can_manage": body.can_manage}
     finally:
         conn.close()
 
@@ -780,10 +830,11 @@ def _repo_link_row(conn, pid: int):
 
 @app.post("/api/projects/{pid}/github/link")
 def github_link_repo(pid: int, body: RepoLinkIn, user=Depends(current_user)):
-    """Admin links a GitHub repo to the project; validated against the admin's GitHub token."""
+    """Link a GitHub repo to the project (integration managers only), validated
+    against the linker's GitHub token."""
     conn = db()
     try:
-        require_admin(conn, pid, user["id"])
+        require_manage(conn, pid, user["id"])
         owner, repo = body.owner.strip(), body.repo.strip()
         if body.full_name.strip() and "/" in body.full_name:
             owner, repo = body.full_name.strip().split("/", 1)
@@ -844,7 +895,7 @@ def github_get_link(pid: int, user=Depends(current_user)):
 def github_unlink_repo(pid: int, user=Depends(current_user)):
     conn = db()
     try:
-        require_admin(conn, pid, user["id"])
+        require_manage(conn, pid, user["id"])
         conn.execute("DELETE FROM repo_links WHERE project_id=?", (pid,))
         conn.commit()
         return {"linked": False}
