@@ -124,33 +124,39 @@ export default function ChatPanel({ pid, me }) {
   }
 
   return (
-    <section className="card flush">
-      <div className="card-head">
+    <section className="panel chat">
+      <header className="panel-head">
         <h2>Discussion</h2>
         <span className="faint">{messages.length} message{messages.length === 1 ? '' : 's'}</span>
-      </div>
+      </header>
 
-      <div className="card-body">
-        {error && <div className="alert error">{error}</div>}
+      <div className="chat-wrap">
+        {error && <div className="alert error" style={{ margin: 'var(--sp-3) var(--sp-4) 0' }}>{error}</div>}
 
-        <div className="msglog" ref={logRef}>
-          {messages.length === 0 && <p className="muted">No messages yet. Start the conversation.</p>}
-          {messages.map((m) => {
+        <div className="chat-log" ref={logRef}>
+          {messages.length === 0 && <p className="muted chat-empty">No messages yet. Start the conversation.</p>}
+          {messages.map((m, i) => {
             const mine = me && m.sender === me.name
+            const prev = messages[i - 1]
+            const grouped = prev && prev.sender === m.sender && (m.ts - prev.ts) < 300
             return (
-              <div className={`msg${mine ? ' me' : ''}`} key={m.id}>
-                <span className="avatar" aria-hidden>{initials(m.sender)}</span>
-                <div className="meta">
-                  <div>
-                    <span className="sender">{m.sender}</span>{' '}
-                    <span className="ts">{new Date(m.ts * 1000).toLocaleTimeString()}</span>
-                  </div>
-                  {m.image && (
-                    <a href={m.image} target="_blank" rel="noreferrer" className="msg-img-link">
-                      <img className="msg-img" src={m.image} alt="attachment" />
-                    </a>
+              <div className={`crow${mine ? ' me' : ''}${grouped ? ' grouped' : ''}`} key={m.id}>
+                {!mine && <div className="crow-gutter">{!grouped && <span className="avatar sm" aria-hidden>{initials(m.sender)}</span>}</div>}
+                <div className="crow-main">
+                  {!grouped && (
+                    <div className="crow-meta">
+                      <span className="crow-sender">{mine ? 'You' : m.sender}</span>
+                      <span className="crow-ts">{new Date(m.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
                   )}
-                  {m.text && <div className="body">{m.text}</div>}
+                  <div className="bubble">
+                    {m.image && (
+                      <a href={m.image} target="_blank" rel="noreferrer" className="bubble-img-link">
+                        <img className="bubble-img" src={m.image} alt="attachment" />
+                      </a>
+                    )}
+                    {m.text && <span className="bubble-text">{m.text}</span>}
+                  </div>
                 </div>
               </div>
             )
@@ -161,42 +167,28 @@ export default function ChatPanel({ pid, me }) {
           <div className="composer-preview">
             <img src={image} alt="attachment preview" />
             <button type="button" className="composer-preview-remove" onClick={() => setImage(null)} aria-label="Remove image">
-              ×
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
             </button>
           </div>
         )}
 
-        <form className="composer" onSubmit={post}>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            hidden
-            onChange={(e) => {
-              attach(e.target.files?.[0])
-              e.target.value = '' // allow re-picking the same file
-            }}
-          />
-          <button
-            type="button"
-            className="btn ghost btn-attach"
-            onClick={() => fileRef.current?.click()}
-            disabled={attaching}
-            title="Attach image"
-            aria-label="Attach image"
-          >
-            {attaching ? '…' : '📎'}
+        <form className="chat-composer" onSubmit={post}>
+          <input ref={fileRef} type="file" accept="image/*" hidden
+            onChange={(e) => { attach(e.target.files?.[0]); e.target.value = '' }} />
+          <button type="button" className="chat-attach" onClick={() => fileRef.current?.click()}
+            disabled={attaching} title="Attach image" aria-label="Attach image">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
           </button>
           <textarea
             placeholder="Write a message…  (paste an image to attach)"
             value={text}
             onChange={(e) => setText(e.target.value)}
             onPaste={onPaste}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) post(e)
-            }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) post(e) }}
           />
-          <button type="submit" className="btn" disabled={(!text.trim() && !image) || attaching}>Post</button>
+          <button type="submit" className="btn sm chat-send" disabled={(!text.trim() && !image) || attaching}>Post</button>
         </form>
       </div>
     </section>

@@ -1163,3 +1163,62 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 /* Board edit fields should match the card's type scale, not the 16px default */
 .board-card-edit input, .board-new input { font-size: 13px; font-weight: 600; padding: 7px 10px; }
 .board-card-edit textarea, .board-new textarea { font-size: 12.5px; line-height: 1.5; padding: 8px 10px; }
+
+/* ============================================================
+   Discussion — clean, Google-Chat-style (grouped rows, bubbles)
+   ============================================================ */
+.avatar.sm { width: 28px; height: 28px; font-size: 11px; }
+.chat-wrap { display: flex; flex-direction: column; }
+.chat-log {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--sp-4) var(--sp-4) var(--sp-2);
+  max-height: 460px; overflow-y: auto;
+}
+.chat-empty { margin: var(--sp-2) 0; }
+
+.crow { display: flex; gap: var(--sp-2); align-items: flex-start; max-width: 100%; }
+.crow.grouped { margin-top: 0; }
+.crow:not(.grouped) { margin-top: var(--sp-3); }
+.crow-gutter { width: 28px; flex-shrink: 0; }
+.crow-main { display: flex; flex-direction: column; min-width: 0; max-width: 76%; }
+
+.crow-meta { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: 3px; padding: 0 2px; }
+.crow-sender { font-size: 12.5px; font-weight: 650; color: var(--text); }
+.crow-ts { font-size: 11px; color: var(--text-faint); }
+
+.bubble {
+  background: var(--surface-2); color: var(--text);
+  padding: 7px 11px; border-radius: 4px 12px 12px 12px;
+  font-size: 13.5px; line-height: 1.45;
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+}
+.bubble-text { display: block; }
+.bubble-img-link { display: block; }
+.bubble-img { max-width: 260px; max-height: 260px; border-radius: var(--r-md); display: block; }
+.bubble-img + .bubble-text { margin-top: 6px; }
+
+/* Own messages: right-aligned, brand-tinted, no avatar gutter */
+.crow.me { flex-direction: row-reverse; }
+.crow.me .crow-main { align-items: flex-end; }
+.crow.me .crow-meta { flex-direction: row-reverse; }
+.crow.me .bubble { background: var(--brand-soft); border-radius: 12px 4px 12px 12px; }
+
+/* Composer */
+.chat-composer {
+  display: flex; align-items: flex-end; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+.chat-attach {
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: var(--r-pill);
+  background: transparent; color: var(--text-muted); border: none; cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.chat-attach:hover { background: var(--surface-2); color: var(--text); }
+.chat-composer textarea {
+  flex: 1; min-height: 38px; max-height: 140px; resize: none;
+  border-radius: var(--r-lg); padding: 9px 14px; font-size: 13.5px;
+  background: var(--surface-2); border-color: var(--border);
+}
+.chat-send { flex-shrink: 0; align-self: center; }
