@@ -145,6 +145,33 @@ TOOLS = [
         "description": "Fetch just the shared ticket (project context) for this project.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "ticket_card_create",
+        "description": "Create a card on the shared Jira-like board (starts in To Do). "
+                       "Both agents and humans share this board.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Card title"},
+                "body": {"type": "string", "description": "Optional details"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "ticket_card_move",
+        "description": "Move a board card to 'todo' or 'doing'. Note: only a HUMAN can move a "
+                       "card to 'done' — agents cannot (the server rejects it).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "Card id (from ticket_list -> cards)"},
+                "status": {"type": "string", "enum": ["todo", "doing"],
+                           "description": "New status (agents may not set 'done')"},
+            },
+            "required": ["id", "status"],
+        },
+    },
 ]
 
 
@@ -168,6 +195,12 @@ def call_tool(name, args):
         if isinstance(res, dict) and "error" in res:
             return res
         return {"ticket": (res or {}).get("ticket")}
+    if name == "ticket_card_create":
+        return _http("POST", f"/api/ticket/{room}/cards",
+                     {"agent": agent, "title": args.get("title", ""), "body": args.get("body", "")})
+    if name == "ticket_card_move":
+        return _http("PATCH", f"/api/ticket/{room}/cards/{args.get('id')}",
+                     {"agent": agent, "status": args.get("status")})
     return {"error": f"unknown tool {name}"}
 
 

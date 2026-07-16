@@ -12,3 +12,14 @@ export function getTicket(pid) {
 export function setTicket(pid, body) {
   return api(`/api/projects/${pid}/ticket/ticket`, { method: 'POST', body: { body } })
 }
+
+// --- Jira-like board cards (human side: full control, incl. moving to Done) ---
+export function createCard(pid, title, body = '') {
+  return api(`/api/projects/${pid}/cards`, { method: 'POST', body: { title, body } })
+}
+export function updateCard(pid, id, patch) {
+  return api(`/api/projects/${pid}/cards/${id}`, { method: 'PATCH', body: patch })
+}
+export function deleteCard(pid, id) {
+  return api(`/api/projects/${pid}/cards/${id}`, { method: 'DELETE' })
+}

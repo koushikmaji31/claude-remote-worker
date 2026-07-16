@@ -95,11 +95,16 @@ export default function Project() {
   const [project, setProject] = useState(null)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
-  // ?tab= lets external flows (e.g. the GitHub OAuth callback) deep-link a section.
-  const [searchParams] = useSearchParams()
+  // ?tab= keeps the active section in the URL so a refresh stays put (and lets
+  // external flows like the GitHub OAuth callback deep-link a section).
+  const [searchParams, setSearchParams] = useSearchParams()
   const rawTab = searchParams.get('tab')
   const tabParam = rawTab === 'github' ? 'branches' : rawTab // old deep-links still land right
-  const [view, setView] = useState(NAV.some((n) => n.id === tabParam) ? tabParam : 'overview')
+  const [view, setViewState] = useState(NAV.some((n) => n.id === tabParam) ? tabParam : 'overview')
+  const setView = useCallback((id) => {
+    setViewState(id)
+    setSearchParams((prev) => { prev.set('tab', id); return prev }, { replace: true })
+  }, [setSearchParams])
 
   useEffect(() => {
     if (!getToken()) navigate('/')

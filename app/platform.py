@@ -141,6 +141,20 @@ def init_db():
             ts REAL,
             PRIMARY KEY(project_id, agent)
         );
+        -- Jira-like ticket cards: a shared board of work items with a status
+        -- workflow (todo|doing|done). Humans and agents both create/move cards,
+        -- but only a human (member-auth) may set status='done'.
+        CREATE TABLE IF NOT EXISTS ticket_cards(
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER REFERENCES projects(id),
+            title TEXT NOT NULL,
+            body TEXT,
+            status TEXT NOT NULL DEFAULT 'todo',
+            created_by TEXT,
+            updated_by TEXT,
+            created_at REAL,
+            updated_at REAL
+        );
         """
     )
     # Safe migration for DBs created before the image column existed.
@@ -1209,7 +1223,65 @@ def _ticket_state(conn, pid: int) -> dict:
         except (ValueError, TypeError):
             tasks = []
         agents.append({"agent": row["agent"], "tasks": tasks, "ts": row["ts"]})
-    return {"ticket": ticket, "agents": agents}
+    cards = [
+        {"id": r["id"], "title": r["title"], "body": r["body"], "status": r["status"],
+         "created_by": r["created_by"], "updated_by": r["updated_by"],
+         "created_at": r["created_at"], "updated_at": r["updated_at"]}
+        for r in conn.execute(
+            "SELECT * FROM ticket_cards WHERE project_id=? ORDER BY id", (pid,)
+        ).fetchall()
+    ]
+    return {"ticket": ticket, "agents": agents, "cards": cards}
+
+
+_CARD_STATUS = ("todo", "doing", "done")
+
+
+def _card_row(conn, pid, cid):
+    row = conn.execute(
+        "SELECT * FROM ticket_cards WHERE id=? AND project_id=?", (cid, pid)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Card not found")
+    return row
+
+
+def _apply_card_update(conn, pid, cid, fields, who, allow_done):
+    """Patch a card. allow_done=False (agents) forbids moving a card to 'done'."""
+    row = _card_row(conn, pid, cid)
+    sets, vals = [], []
+    if "title" in fields and fields["title"] is not None:
+        sets.append("title=?"); vals.append(str(fields["title"]))
+    if "body" in fields and fields["body"] is not None:
+        sets.append("body=?"); vals.append(str(fields["body"]))
+    if "status" in fields and fields["status"] is not None:
+        status = fields["status"]
+        if status not in _CARD_STATUS:
+            raise HTTPException(400, "status must be todo|doing|done")
+        if status == "done" and not allow_done:
+            raise HTTPException(403, "only a human can move a card to Done")
+        sets.append("status=?"); vals.append(status)
+    if not sets:
+        return _card_row(conn, pid, cid)
+    sets.append("updated_by=?"); vals.append(who)
+    sets.append("updated_at=?"); vals.append(time.time())
+    vals.extend([cid, pid])
+    conn.execute(f"UPDATE ticket_cards SET {', '.join(sets)} WHERE id=? AND project_id=?", vals)
+    conn.commit()
+    return _card_row(conn, pid, cid)
+
+
+def _create_card(conn, pid, title, body, who):
+    if not (title or "").strip():
+        raise HTTPException(400, "title is required")
+    now = time.time()
+    cur = conn.execute(
+        "INSERT INTO ticket_cards(project_id, title, body, status, created_by, updated_by, created_at, updated_at) "
+        "VALUES(?,?,?,'todo',?,?,?,?)",
+        (pid, title.strip(), body or "", who, who, now, now),
+    )
+    conn.commit()
+    return cur.lastrowid
 
 
 def _bus_project(conn, request: Request, invite_code: str) -> int:
@@ -1312,6 +1384,97 @@ def set_ticket_ticket_bus(invite_code: str, body: AgentTicketIn, request: Reques
             (pid, body.body, body.agent, time.time()),
         )
         conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ---------- Ticket cards (Jira-like board) ----------
+
+class CardCreate(BaseModel):
+    title: str
+    body: str = ""
+
+
+class CardPatch(BaseModel):
+    status: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+
+
+class AgentCardCreate(BaseModel):
+    agent: str
+    title: str
+    body: str = ""
+
+
+class AgentCardPatch(BaseModel):
+    agent: str
+    status: Optional[str] = None
+    title: Optional[str] = None
+    body: Optional[str] = None
+
+
+# -- human (member auth): full control, including moving a card to Done --
+@app.post("/api/projects/{pid}/cards")
+def create_card(pid: int, body: CardCreate, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        _create_card(conn, pid, body.title, body.body, user["name"])
+        return _ticket_state(conn, pid)
+    finally:
+        conn.close()
+
+
+@app.patch("/api/projects/{pid}/cards/{cid}")
+def update_card(pid: int, cid: int, body: CardPatch, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        _apply_card_update(conn, pid, cid, body.dict(exclude_unset=True), user["name"], allow_done=True)
+        return _ticket_state(conn, pid)
+    finally:
+        conn.close()
+
+
+@app.delete("/api/projects/{pid}/cards/{cid}")
+def delete_card(pid: int, cid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        _card_row(conn, pid, cid)
+        conn.execute("DELETE FROM ticket_cards WHERE id=? AND project_id=?", (cid, pid))
+        conn.commit()
+        return _ticket_state(conn, pid)
+    finally:
+        conn.close()
+
+
+# -- agent (bus token): create + move To Do/In Progress, but NOT to Done --
+@app.post("/api/ticket/{invite_code}/cards")
+def create_card_bus(invite_code: str, body: AgentCardCreate, request: Request):
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        if not body.agent:
+            raise HTTPException(400, "agent is required")
+        _create_card(conn, pid, body.title, body.body, body.agent)
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.patch("/api/ticket/{invite_code}/cards/{cid}")
+def update_card_bus(invite_code: str, cid: int, body: AgentCardPatch, request: Request):
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        if not body.agent:
+            raise HTTPException(400, "agent is required")
+        _apply_card_update(conn, pid, cid,
+                           body.dict(exclude_unset=True, exclude={"agent"}),
+                           body.agent, allow_done=False)
         return {"ok": True}
     finally:
         conn.close()
