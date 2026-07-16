@@ -7,6 +7,7 @@ import ChatPanel from './components/ChatPanel.jsx'
 import GitHubPanel from './components/GitHubPanel.jsx'
 import OverviewDashboard from './components/OverviewDashboard.jsx'
 import TicketPanel from './components/TicketPanel.jsx'
+import ActivityPanel from './components/ActivityPanel.jsx'
 
 function initials(name) {
   return (name || '?')
