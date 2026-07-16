@@ -120,6 +120,27 @@ export default function Project() {
 
   useEffect(() => { loadProject() }, [loadProject])
 
+  // Activity signal feed: one poll drives both the tab badge and the panel.
+  const [activity, setActivity] = useState(null)
+  useEffect(() => {
+    let alive = true
+    const tick = () => api(`/api/projects/${pid}/activity`)
+      .then((d) => { if (alive) setActivity(d) })
+      .catch(() => {})
+    tick()
+    const iv = setInterval(tick, 5000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [pid])
+
+  // Inline action from the feed: post a heads-up to the project discussion.
+  const pingActivity = useCallback((e) => {
+    const who = (e.agents || []).join(' & ')
+    const text = e.type === 'blocker'
+      ? `⚠ Heads up ${who}: overlapping edits in ${e.file} — a conflict is forming. Coordinate before pushing.`
+      : `◴ Heads up ${who}: looks stuck — ${e.detail || 'no recent progress'}. Need help?`
+    return api(`/api/projects/${pid}/messages`, { method: 'POST', body: { text } }).catch(() => {})
+  }, [pid])
+
   const isAdmin = project && me && project.admin_id === me.user_id
 
   async function removeMember(uid) {
