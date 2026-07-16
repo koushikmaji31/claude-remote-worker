@@ -270,6 +270,8 @@ export default function Project() {
             </div>
           )}
 
+          {view === 'activity' && <ActivityPanel data={activity} onPing={pingActivity} />}
+
           {view === 'discussion' && <ChatPanel pid={pid} me={me} />}
 
           {view === 'branches' && <GitHubPanel pid={pid} canManage={!!project.can_manage} />}
