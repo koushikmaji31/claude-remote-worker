@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { api, getToken, getUser } from './api.js'
 import ThemeToggle from './ui/ThemeToggle.jsx'
+import { avatarColor } from './ui/avatarColor.js'
 import ChatPanel from './components/ChatPanel.jsx'
 import GitHubPanel from './components/GitHubPanel.jsx'
 import OverviewDashboard from './components/OverviewDashboard.jsx'
@@ -159,7 +160,7 @@ export default function Project() {
     <div className="app">
       <aside className="side">
         <div className="side-top">
-          <span className="side-avatar" aria-hidden>{initials(project.name)}</span>
+          <span className="side-avatar" aria-hidden style={{ background: avatarColor(project.name) }}>{initials(project.name)}</span>
           <div className="side-id">
             <div className="side-name" title={project.name}>{project.name}</div>
             <div className="side-sub">{memberCount} member{memberCount === 1 ? '' : 's'}</div>
@@ -247,7 +248,7 @@ export default function Project() {
                 {project.members.map((m) => (
                   <li key={m.user_id} className="member-row">
                     <span className="row">
-                      <span className="avatar" aria-hidden>{initials(m.name)}</span>
+                      <span className="avatar" aria-hidden style={{ background: avatarColor(m.name) }}>{initials(m.name)}</span>
                       <span className="member-meta">
                         <span className="member-name">
                           {m.name} <span className={`badge ${m.role}`}>{m.role}</span>

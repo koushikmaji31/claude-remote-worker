@@ -5,6 +5,7 @@
 // Styling uses the shared design tokens/classes — no hardcoded colors here.
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { api } from '../api.js'
+import { avatarColor } from '../ui/avatarColor.js'
 
 const MAX_EDGE = 1600 // px, longest edge after downscale
 const MAX_BYTES = 2 * 1024 * 1024 // 2MB hard cap on the data URL (matches server backstop)
@@ -135,7 +136,7 @@ export default function ChatPanel({ pid, me }) {
             const grouped = prev && prev.sender === m.sender && (m.ts - prev.ts) < 300
             return (
               <div className={`crow${mine ? ' me' : ''}${grouped ? ' grouped' : ''}`} key={m.id}>
-                {!mine && <div className="crow-gutter">{!grouped && <span className="avatar sm" aria-hidden>{initials(m.sender)}</span>}</div>}
+                {!mine && <div className="crow-gutter">{!grouped && <span className="avatar sm" aria-hidden style={{ background: avatarColor(m.sender) }}>{initials(m.sender)}</span>}</div>}
                 <div className="crow-main">
                   {!grouped && (
                     <div className="crow-meta">

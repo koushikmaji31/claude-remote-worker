@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api, getToken, getUser, setAuth, clearAuth } from './api.js'
 import ThemeToggle from './ui/ThemeToggle.jsx'
+import { avatarColor } from './ui/avatarColor.js'
 
 function initials(name = '') {
   return name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || '').join('') || '?'
@@ -130,7 +131,7 @@ function TopNav({ authed, user, onLogout }) {
           {authed && user ? (
             <>
               <div className="nav-user">
-                <div className="avatar">{initials(user.name)}</div>
+                <div className="avatar" style={{ background: avatarColor(user.name) }}>{initials(user.name)}</div>
                 <span className="nav-user-name">{user.name}</span>
               </div>
               <button className="btn ghost sm" onClick={onLogout}>Logout</button>
@@ -298,7 +299,7 @@ export default function Landing() {
                   <button key={p.project_id} className="proj-card"
                           onClick={() => navigate(`/project/${p.project_id}`)}>
                     <div className="proj-card-top">
-                      <span className="avatar" aria-hidden>{initials(p.name)}</span>
+                      <span className="avatar" aria-hidden style={{ background: avatarColor(p.name) }}>{initials(p.name)}</span>
                       <span className={`badge ${p.role}`}>{p.role}</span>
                     </div>
                     <div className="proj-name">{p.name}</div>
