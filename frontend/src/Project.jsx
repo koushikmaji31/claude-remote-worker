@@ -30,6 +30,7 @@ const NAV = [
 function NavIcon({ id }) {
   const common = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }
   if (id === 'overview') return <svg {...common}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+  if (id === 'activity') return <svg {...common}><path d="M3 12h4l2 6 4-14 2 8 2-2h4" /></svg>
   if (id === 'discussion') return <svg {...common}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
   if (id === 'branches') return <svg {...common}><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7M8.5 6H14a4 4 0 0 1 4 4v.5M18 10.5V13" /></svg>
   if (id === 'ticket') return <svg {...common}><path d="M20.6 12a2.4 2.4 0 0 0 1.4-2.2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v3.8A2.4 2.4 0 0 0 3.4 12 2.4 2.4 0 0 0 2 14.2V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3.8A2.4 2.4 0 0 0 20.6 12z" /><path d="M13 5v2M13 11v2M13 17v2" /></svg>
