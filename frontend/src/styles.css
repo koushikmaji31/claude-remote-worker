@@ -1288,6 +1288,13 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
   font-size: 9.5px; font-weight: 700; letter-spacing: .06em; color: var(--text-faint);
   border: 1px solid var(--border); border-radius: var(--r-sm); padding: 1px 5px;
 }
+/* Jira card transition controls (Phase 3) */
+.jira-moves-row { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+.jira-move-hint { font-size: 10.5px; }
+/* Create-a-Jira-issue form in the connect panel (Phase 3) */
+.jira-new { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: stretch; margin-top: var(--sp-3); }
+.jira-new select { flex: 0 0 auto; }
+.jira-new input { flex: 1 1 200px; min-width: 0; }
 .board-card-edit { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
 .board-card-editrow { display: flex; gap: var(--sp-2); justify-content: flex-end; align-items: center; }
 

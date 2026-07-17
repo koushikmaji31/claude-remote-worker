@@ -5,8 +5,10 @@ import { useEffect, useState, useCallback } from 'react'
 import { api } from '../api.js'
 import {
   jiraStatus, jiraConnect, jiraDisconnect, jiraOAuthStart,
-  getJiraLink, linkJiraProject, unlinkJiraProject, syncJira,
+  getJiraLink, linkJiraProject, unlinkJiraProject, syncJira, jiraCreateIssue,
 } from '../lib/jira.js'
+
+const JIRA_TYPES = ['Task', 'Story', 'Bug', 'Epic']
 
 // Pull the ?jira=connected|error the OAuth callback appended, then scrub it.
 function consumeJiraResult() {
@@ -33,6 +35,9 @@ export default function JiraPanel({ pid }) {
   const [banner, setBanner] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [syncInfo, setSyncInfo] = useState(null)  // { synced, at } after a sync
+  const [newSummary, setNewSummary] = useState('')
+  const [newType, setNewType] = useState('Task')
+  const [creating, setCreating] = useState(false)
 
   const refresh = useCallback(async () => {
     setError('')
@@ -76,6 +81,20 @@ export default function JiraPanel({ pid }) {
 
   // Auto-sync once a Jira project is linked so the board fills without a click.
   useEffect(() => { if (link?.linked) doSync() }, [link?.linked, doSync])
+
+  // Create a Jira issue (lands in the board via the mirror + next sync).
+  async function createIssue(e) {
+    e?.preventDefault()
+    const summary = newSummary.trim()
+    if (!summary) return
+    setCreating(true); setError('')
+    try {
+      await jiraCreateIssue(pid, { summary, issue_type: newType })
+      setNewSummary('')
+      await doSync()
+    } catch (err) { setError(err.message) }
+    finally { setCreating(false) }
+  }
 
   return (
     <section className="panel">
@@ -157,24 +176,36 @@ export default function JiraPanel({ pid }) {
               )
             )}
             {link?.linked && (
-              <div className="gh-connected">
-                <div>
-                  <a className="gh-login" href={link.url} target="_blank" rel="noreferrer">
-                    {link.project_name || link.project_key} ({link.project_key})
-                  </a>
-                  <div className="faint">
-                    {link.site}
-                    {syncInfo && ` · ${syncInfo.synced} issue${syncInfo.synced === 1 ? '' : 's'} synced into the board`}
-                    {syncing && ' · syncing…'}
+              <>
+                <div className="gh-connected">
+                  <div>
+                    <a className="gh-login" href={link.url} target="_blank" rel="noreferrer">
+                      {link.project_name || link.project_key} ({link.project_key})
+                    </a>
+                    <div className="faint">
+                      {link.site}
+                      {syncInfo && ` · ${syncInfo.synced} issue${syncInfo.synced === 1 ? '' : 's'} synced into the board`}
+                      {syncing && ' · syncing…'}
+                    </div>
+                  </div>
+                  <div className="row" style={{ gap: 'var(--sp-2)' }}>
+                    <button className="btn ghost sm" onClick={doSync} disabled={syncing}>
+                      {syncing ? 'Syncing…' : 'Sync from Jira'}
+                    </button>
+                    {canManage && <button className="btn ghost sm" onClick={unlink} disabled={busy}>Unlink</button>}
                   </div>
                 </div>
-                <div className="row" style={{ gap: 'var(--sp-2)' }}>
-                  <button className="btn ghost sm" onClick={doSync} disabled={syncing}>
-                    {syncing ? 'Syncing…' : 'Sync from Jira'}
+                <form className="jira-new" onSubmit={createIssue}>
+                  <select value={newType} onChange={(e) => setNewType(e.target.value)} aria-label="Issue type">
+                    {JIRA_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <input placeholder={`New ${newType.toLowerCase()} in ${link.project_key}…`}
+                    value={newSummary} onChange={(e) => setNewSummary(e.target.value)} />
+                  <button className="btn sm" type="submit" disabled={creating || !newSummary.trim()}>
+                    {creating ? 'Creating…' : 'Create issue'}
                   </button>
-                  {canManage && <button className="btn ghost sm" onClick={unlink} disabled={busy}>Unlink</button>}
-                </div>
-              </div>
+                </form>
+              </>
             )}
           </div>
         )}

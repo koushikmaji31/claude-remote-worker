@@ -25,3 +25,9 @@ export const unlinkJiraProject = (pid) =>
 
 // --- Read (Phase 2): mirror linked Jira issues into the ticket_cards board ---
 export const syncJira = (pid) => api(`/api/projects/${pid}/jira/sync`, { method: 'POST' })
+
+// --- Write (Phase 3): create an issue, transition status back to Jira ---
+export const jiraCreateIssue = (pid, data) =>
+  api(`/api/projects/${pid}/jira/issues`, { method: 'POST', body: data })
+export const jiraTransition = (pid, key, to) =>
+  api(`/api/projects/${pid}/jira/issues/${encodeURIComponent(key)}/transition`, { method: 'POST', body: { to } })

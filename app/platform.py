@@ -2229,6 +2229,135 @@ def jira_sync(pid: int, user=Depends(current_user)):
         conn.close()
 
 
+# ---- Jira write (Phase 3): create an issue, transition status back to Jira ----
+
+def _adf(text: str) -> dict:
+    """Minimal Atlassian Document Format doc for a plain-text description (v3 API)."""
+    return {"type": "doc", "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]}
+
+
+def _mirror_jira_card(conn, pid, link, key, status, title, meta_extra=None):
+    """Upsert a single Jira issue into ticket_cards as a source='jira' card."""
+    now = time.time()
+    meta = json.dumps({"type": "", "priority": "", "assignee": None, "labels": [],
+                       "jira_status": "", **(meta_extra or {})})
+    url = f"https://{link['site']}/browse/{key}"
+    existing = conn.execute(
+        "SELECT id FROM ticket_cards WHERE project_id=? AND source='jira' AND external_id=?",
+        (pid, key),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE ticket_cards SET title=?, status=?, meta=?, external_url=?, updated_by='jira', updated_at=? WHERE id=?",
+            (title, status, meta, url, now, existing["id"]),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO ticket_cards(project_id, title, body, status, created_by, updated_by, "
+            "created_at, updated_at, source, external_id, external_url, meta) "
+            "VALUES(?,?,?,?,?,?,?,?,'jira',?,?,?)",
+            (pid, title, "", status, "jira", "jira", now, now, key, url, meta),
+        )
+
+
+class JiraIssueCreateIn(BaseModel):
+    summary: str
+    issue_type: str = "Task"
+    description: str = ""
+
+
+@app.post("/api/projects/{pid}/jira/issues")
+def jira_create_issue(pid: int, body: JiraIssueCreateIn, user=Depends(current_user)):
+    """Create a Jira issue in the linked project and mirror it into the board."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        link, idrow, token = _project_jira_ctx(conn, pid, user["id"])
+        summary = body.summary.strip()
+        if not summary:
+            raise HTTPException(400, "summary is required")
+        itype = body.issue_type.strip() or "Task"
+        fields = {"project": {"key": link["project_key"]}, "summary": summary,
+                  "issuetype": {"name": itype}}
+        if body.description.strip():
+            fields["description"] = _adf(body.description.strip())
+        try:
+            status, data, _ = _jira_api(idrow, token, "POST", "/issue", body={"fields": fields})
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach Jira: {e}")
+        if status in (401, 403):
+            raise HTTPException(401, "Jira token invalid or lacks create permission")
+        if status not in (200, 201):
+            errs = data.get("errors") if isinstance(data, dict) else None
+            msg = "; ".join(f"{k}: {v}" for k, v in errs.items()) if errs else (
+                data.get("errorMessages", ["unknown"])[0] if isinstance(data, dict) else "unknown")
+            raise HTTPException(400, f"Jira rejected the issue: {msg}")
+        key = data.get("key")
+        _mirror_jira_card(conn, pid, link, key, "todo", summary,
+                          {"type": itype, "jira_status": "To Do"})
+        conn.commit()
+        return {"created": True, "key": key, "url": f"https://{link['site']}/browse/{key}"}
+    finally:
+        conn.close()
+
+
+class JiraTransitionIn(BaseModel):
+    to: str  # todo | doing | done
+
+
+@app.post("/api/projects/{pid}/jira/issues/{key}/transition")
+def jira_transition(pid: int, key: str, body: JiraTransitionIn, user=Depends(current_user)):
+    """Move a Jira issue to the target column by running the matching Jira workflow
+    transition, then update the mirrored card. Member-auth (human/system path)."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        target = body.to
+        if target not in ("todo", "doing", "done"):
+            raise HTTPException(400, "to must be todo|doing|done")
+        link, idrow, token = _project_jira_ctx(conn, pid, user["id"])
+        try:
+            st, data, _ = _jira_api(idrow, token, "GET", f"/issue/{key}/transitions")
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach Jira: {e}")
+        if st != 200:
+            raise HTTPException(400, f"Could not list Jira transitions for {key}")
+        wanted = None
+        for tr in data.get("transitions", []):
+            cat = _JIRA_CAT.get((((tr.get("to") or {}).get("statusCategory") or {}).get("key")))
+            if cat == target:
+                wanted = tr
+                break
+        if not wanted:
+            raise HTTPException(400, f"No Jira transition to '{target}' is available for {key}")
+        st2, d2, _ = _jira_api(idrow, token, "POST", f"/issue/{key}/transitions",
+                               body={"transition": {"id": wanted["id"]}})
+        if st2 not in (200, 204):
+            msg = d2.get("errorMessages", ["transition failed"])[0] if isinstance(d2, dict) else "transition failed"
+            raise HTTPException(400, f"Jira rejected the transition: {msg}")
+        # Reflect it on the mirrored card immediately (next sync will confirm).
+        row = conn.execute(
+            "SELECT id, meta FROM ticket_cards WHERE project_id=? AND source='jira' AND external_id=?",
+            (pid, key),
+        ).fetchone()
+        if row:
+            try:
+                m = json.loads(row["meta"]) if row["meta"] else {}
+            except (ValueError, TypeError):
+                m = {}
+            m["jira_status"] = (wanted.get("to") or {}).get("name", "")
+            conn.execute(
+                "UPDATE ticket_cards SET status=?, meta=?, updated_by='jira', updated_at=? WHERE id=?",
+                (target, json.dumps(m), time.time(), row["id"]),
+            )
+            conn.commit()
+        return {"ok": True, "key": key, "status": target,
+                "jira_status": (wanted.get("to") or {}).get("name")}
+    finally:
+        conn.close()
+
+
 # ---- Jira OAuth ("Continue with Atlassian"); inert until JIRA_CLIENT_ID/SECRET set ----
 
 def _jira_redirect_uri() -> str:

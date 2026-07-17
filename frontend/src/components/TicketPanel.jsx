@@ -5,6 +5,7 @@
 // Polls every 3s. Shared design tokens + .board-*/.ticket-* rules; no emoji.
 import { useEffect, useState, useCallback } from 'react'
 import { getTicket, createCard, updateCard, deleteCard } from '../lib/ticket.js'
+import { jiraTransition } from '../lib/jira.js'
 import JiraPanel from './JiraPanel.jsx'
 import { avatarColor } from '../ui/avatarColor.js'
 
@@ -31,9 +32,10 @@ const JIRA_TYPE = { Bug: 'bug', Story: 'story', Task: 'task', Epic: 'epic', 'Sub
 const JIRA_PRIO = { Highest: 'highest', High: 'high', Medium: 'medium', Low: 'low', Lowest: 'lowest' }
 const initials = (name) => (name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
 
-// Read-only mirror of a Jira issue (source='jira'). Rich card: type, key, priority
-// stripe, assignee avatar, labels. Moves/edits happen in Jira, not here.
-function JiraCard({ card }) {
+// Mirror of a Jira issue (source='jira'). Rich card: type, key, priority stripe,
+// assignee avatar, labels. Title/desc are edited in Jira; moving the card runs the
+// real Jira workflow transition (onMove -> POST .../transition), then re-syncs.
+function JiraCard({ card, onMove, moving }) {
   const m = card.meta || {}
   const typeSlug = JIRA_TYPE[m.type] || 'task'
   const prioSlug = JIRA_PRIO[m.priority] || 'none'
@@ -57,17 +59,26 @@ function JiraCard({ card }) {
         ) : <span className="faint">Unassigned</span>}
         <span className="jira-src">JIRA</span>
       </div>
+      <div className="board-card-foot jira-moves-row">
+        <span className="faint jira-move-hint">{moving ? 'Transitioning…' : 'Move in Jira:'}</span>
+        <div className="board-card-moves">
+          {COLUMNS.filter((t) => t.id !== card.status).map((t) => (
+            <button key={t.id} className="board-move" title={`Transition ${card.external_id} to ${t.label} in Jira`}
+              disabled={moving} onClick={() => onMove(t.id)}>{MOVE_LABEL[t.id]}</button>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
 
-function Card({ card, onMove, onSave, onDelete, colId }) {
+function Card({ card, onMove, onSave, onDelete, onJiraMove, jiraMoving, colId }) {
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState(card.title)
   const [body, setBody] = useState(card.body || '')
   const dirty = title !== card.title || body !== (card.body || '')
 
-  if (card.source === 'jira') return <JiraCard card={card} />
+  if (card.source === 'jira') return <JiraCard card={card} onMove={onJiraMove} moving={jiraMoving} />
 
   return (
     <div className={`board-card ${card.status === 'done' ? 'is-done' : ''}`}>
@@ -107,6 +118,7 @@ export default function TicketPanel({ pid }) {
   const [newTitle, setNewTitle] = useState('')
   const [newBody, setNewBody] = useState('')
   const [adding, setAdding] = useState(false)
+  const [movingKey, setMovingKey] = useState(null)  // Jira key mid-transition
 
   const poll = useCallback(() => {
     getTicket(pid).then(setData).catch(() => {})
@@ -128,6 +140,13 @@ export default function TicketPanel({ pid }) {
     const title = newTitle.trim(); const body = newBody
     setNewTitle(''); setNewBody(''); setAdding(false)
     await act(() => createCard(pid, title, body))
+  }
+  // Move a Jira card = run the real Jira transition, then refresh the board.
+  async function jiraMove(key, to) {
+    setError(''); setMovingKey(key)
+    try { await jiraTransition(pid, key, to); poll() }
+    catch (err) { setError(err.message); poll() }
+    finally { setMovingKey(null) }
   }
 
   const agents = data?.agents || []
@@ -169,7 +188,9 @@ export default function TicketPanel({ pid }) {
                       <Card key={c.id} card={c} colId={col.id}
                         onMove={(status) => act(() => updateCard(pid, c.id, { status }))}
                         onSave={(patch) => act(() => updateCard(pid, c.id, patch))}
-                        onDelete={() => act(() => deleteCard(pid, c.id))} />
+                        onDelete={() => act(() => deleteCard(pid, c.id))}
+                        onJiraMove={(to) => jiraMove(c.external_id, to)}
+                        jiraMoving={movingKey === c.external_id} />
                     ))}
                   </div>
                 </div>
