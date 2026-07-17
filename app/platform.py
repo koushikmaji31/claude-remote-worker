@@ -2367,6 +2367,110 @@ def jira_transition(pid: int, key: str, body: JiraTransitionIn, user=Depends(cur
         conn.close()
 
 
+# ---- Jira, agent/bus-token path (Phase 4b): agents drive Jira, human-only-Done ----
+# Same create/transition capability for agents, authorized by the shared bus token
+# (like the /api/ticket/{invite_code}/cards endpoints). The one hard rule: an agent
+# may move an issue To Do <-> In Progress but NEVER to Done — only a human can.
+
+def _do_jira_create(conn, pid, agent, summary, itype, description):
+    link, idrow, token = _project_jira_ctx(conn, pid, None)  # None -> use the linker's token
+    summary = (summary or "").strip()
+    if not summary:
+        raise HTTPException(400, "summary is required")
+    itype = (itype or "Task").strip() or "Task"
+    fields = {"project": {"key": link["project_key"]}, "summary": summary, "issuetype": {"name": itype}}
+    if (description or "").strip():
+        fields["description"] = _adf(description.strip())
+    try:
+        status, data, _ = _jira_api(idrow, token, "POST", "/issue", body={"fields": fields})
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach Jira: {e}")
+    if status not in (200, 201):
+        errs = data.get("errors") if isinstance(data, dict) else None
+        msg = "; ".join(f"{k}: {v}" for k, v in errs.items()) if errs else (
+            data.get("errorMessages", ["unknown"])[0] if isinstance(data, dict) else "unknown")
+        raise HTTPException(400, f"Jira rejected the issue: {msg}")
+    key = data.get("key")
+    _mirror_jira_card(conn, pid, link, key, "todo", summary, {"type": itype, "jira_status": "To Do"})
+    conn.commit()
+    return {"created": True, "key": key, "url": f"https://{link['site']}/browse/{key}", "by": agent}
+
+
+class AgentJiraCreate(BaseModel):
+    agent: str
+    summary: str
+    issue_type: str = "Task"
+    description: str = ""
+
+
+class AgentJiraTransition(BaseModel):
+    agent: str
+    to: str  # todo | doing  (NOT done — human-only)
+
+
+@app.post("/api/ticket/{invite_code}/jira/issues")
+def jira_create_issue_bus(invite_code: str, body: AgentJiraCreate, request: Request):
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        if not body.agent:
+            raise HTTPException(400, "agent is required")
+        return _do_jira_create(conn, pid, body.agent, body.summary, body.issue_type, body.description)
+    finally:
+        conn.close()
+
+
+@app.post("/api/ticket/{invite_code}/jira/issues/{key}/transition")
+def jira_transition_bus(invite_code: str, key: str, body: AgentJiraTransition, request: Request):
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        if not body.agent:
+            raise HTTPException(400, "agent is required")
+        target = body.to
+        if target == "done":
+            raise HTTPException(403, "only a human can move a Jira issue to Done")
+        if target not in ("todo", "doing"):
+            raise HTTPException(400, "to must be todo|doing (agents cannot set done)")
+        link, idrow, token = _project_jira_ctx(conn, pid, None)
+        try:
+            st, data, _ = _jira_api(idrow, token, "GET", f"/issue/{key}/transitions")
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach Jira: {e}")
+        if st != 200:
+            raise HTTPException(400, f"Could not list Jira transitions for {key}")
+        wanted = None
+        for tr in data.get("transitions", []):
+            cat = _JIRA_CAT.get((((tr.get("to") or {}).get("statusCategory") or {}).get("key")))
+            if cat == target:
+                wanted = tr
+                break
+        if not wanted:
+            raise HTTPException(400, f"No Jira transition to '{target}' is available for {key}")
+        st2, d2, _ = _jira_api(idrow, token, "POST", f"/issue/{key}/transitions",
+                               body={"transition": {"id": wanted["id"]}})
+        if st2 not in (200, 204):
+            raise HTTPException(400, "Jira rejected the transition")
+        row = conn.execute(
+            "SELECT id, meta FROM ticket_cards WHERE project_id=? AND source='jira' AND external_id=?",
+            (pid, key),
+        ).fetchone()
+        if row:
+            try:
+                m = json.loads(row["meta"]) if row["meta"] else {}
+            except (ValueError, TypeError):
+                m = {}
+            m["jira_status"] = (wanted.get("to") or {}).get("name", "")
+            conn.execute(
+                "UPDATE ticket_cards SET status=?, meta=?, updated_by=?, updated_at=? WHERE id=?",
+                (target, json.dumps(m), f"agent:{body.agent}", time.time(), row["id"]),
+            )
+            conn.commit()
+        return {"ok": True, "key": key, "status": target, "by": body.agent}
+    finally:
+        conn.close()
+
+
 # ---- Jira OAuth ("Continue with Atlassian"); inert until JIRA_CLIENT_ID/SECRET set ----
 
 def _jira_redirect_uri() -> str:
