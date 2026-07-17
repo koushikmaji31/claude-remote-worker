@@ -7,7 +7,7 @@ import ChatPanel from './components/ChatPanel.jsx'
 import GitHubPanel from './components/GitHubPanel.jsx'
 import OverviewDashboard from './components/OverviewDashboard.jsx'
 import TicketPanel from './components/TicketPanel.jsx'
-import ActivityPanel from './components/ActivityPanel.jsx'
+import FleetPanel from './components/FleetPanel.jsx'
 
 function initials(name) {
   return (name || '?')
@@ -20,7 +20,7 @@ function initials(name) {
 
 const NAV = [
   { id: 'overview', label: 'Overview' },
-  { id: 'activity', label: 'Activity' }, // signal feed across the project's agents
+  { id: 'fleet', label: 'Fleet' }, // agent roster + assignment + observability (incl. signals)
   { id: 'discussion', label: 'Discussion' },
   { id: 'branches', label: 'Branches' }, // GitHub-backed (graph, PRs, issues)
   { id: 'ticket', label: 'Ticket' },
@@ -30,7 +30,7 @@ const NAV = [
 function NavIcon({ id }) {
   const common = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }
   if (id === 'overview') return <svg {...common}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
-  if (id === 'activity') return <svg {...common}><path d="M3 12h4l2 6 4-14 2 8 2-2h4" /></svg>
+  if (id === 'fleet') return <svg {...common}><circle cx="7" cy="8" r="3" /><circle cx="17" cy="8" r="3" /><path d="M2 20c0-2.8 2.2-5 5-5s5 2.2 5 5M12 20c0-2.8 2.2-5 5-5s5 2.2 5 5" /></svg>
   if (id === 'discussion') return <svg {...common}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
   if (id === 'branches') return <svg {...common}><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 8.5v7M8.5 6H14a4 4 0 0 1 4 4v.5M18 10.5V13" /></svg>
   if (id === 'ticket') return <svg {...common}><path d="M20.6 12a2.4 2.4 0 0 0 1.4-2.2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v3.8A2.4 2.4 0 0 0 3.4 12 2.4 2.4 0 0 0 2 14.2V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3.8A2.4 2.4 0 0 0 20.6 12z" /><path d="M13 5v2M13 11v2M13 17v2" /></svg>
@@ -139,6 +139,13 @@ export default function Project() {
       ? `⚠ Heads up ${who}: overlapping edits in ${e.file} — a conflict is forming. Coordinate before pushing.`
       : `◴ Heads up ${who}: looks stuck — ${e.detail || 'no recent progress'}. Need help?`
     return api(`/api/projects/${pid}/messages`, { method: 'POST', body: { text } }).catch(() => {})
+  }, [pid])
+
+  // Answer a pending agent decision from the feed; refresh so it clears.
+  const decideActivity = useCallback((e, answer) => {
+    return api(`/api/projects/${pid}/decisions/${e.decision_id}/answer`, {
+      method: 'POST', body: { answer },
+    }).then(() => api(`/api/projects/${pid}/activity`).then(setActivity)).catch(() => {})
   }, [pid])
 
   const isAdmin = project && me && project.admin_id === me.user_id
@@ -270,7 +277,9 @@ export default function Project() {
             </div>
           )}
 
-          {view === 'activity' && <ActivityPanel data={activity} onPing={pingActivity} />}
+          {view === 'fleet' && <FleetPanel pid={pid} />}
+
+          {view === 'activity' && <ActivityPanel data={activity} onPing={pingActivity} onDecide={decideActivity} />}
 
           {view === 'discussion' && <ChatPanel pid={pid} me={me} />}
 

@@ -15,10 +15,15 @@ from /tmp/claude-bus/names/* or CLAUDE_BUS_NAME (fallback hostname).
 import os
 import sys
 import json
+import time
 import socket
 import urllib.parse
 import urllib.request
 import urllib.error
+
+# ask_human blocks the tool call until a human answers on the Activity page.
+ASK_HUMAN_TIMEOUT = int(os.environ.get("ASK_HUMAN_TIMEOUT", "600"))  # 10 min
+ASK_HUMAN_POLL = int(os.environ.get("ASK_HUMAN_POLL", "3"))          # seconds
 
 
 def _read(path):
@@ -172,6 +177,51 @@ TOOLS = [
             "required": ["id", "status"],
         },
     },
+    {
+        "name": "my_tasks",
+        "description": "List the ticket-board cards assigned to YOU (this agent). Check this at the "
+                       "start of your turn and work your assigned queue. Returns cards with id, "
+                       "title, body, status — move them with ticket_card_move as you work.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "signal",
+        "description": "Post a HIGH-SIGNAL update to the team Activity feed — the kind of thing a "
+                       "teammate glancing at the dashboard would want to know, phrased concretely "
+                       "(name the file, the number, the specific decision). Emit as you work: a "
+                       "milestone, a decision or assumption you made, a risk you spotted, or a "
+                       "blocker/question. Not a task list — one crisp sentence. Examples: "
+                       "\"wired the broadcast layer in canvas/cursors.ts — 47 lines so far\"; "
+                       "\"assuming cookies (not server actions) for the session refactor\"; "
+                       "\"flagged 3 LCP regressions on /pricing\".",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The update, one concrete sentence"},
+                "kind": {"type": "string",
+                         "enum": ["progress", "decision", "assumption", "blocker", "question", "risk"],
+                         "description": "progress|decision|assumption|blocker|question|risk"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "ask_human",
+        "description": "Ask a human a yes/no or multiple-choice question and BLOCK until they "
+                       "answer from the Activity page. Use this when you hit a decision only a "
+                       "human should make (destructive action, ambiguous requirement, which "
+                       "approach). Returns {\"answer\": \"<chosen option>\"}. Times out after a "
+                       "while and returns {\"status\": \"timeout\"} — treat that as no decision.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The question to ask the human"},
+                "options": {"type": "array", "items": {"type": "string"},
+                            "description": "Choices (default [\"yes\",\"no\"])"},
+            },
+            "required": ["question"],
+        },
+    },
 ]
 
 
@@ -201,6 +251,35 @@ def call_tool(name, args):
     if name == "ticket_card_move":
         return _http("PATCH", f"/api/ticket/{room}/cards/{args.get('id')}",
                      {"agent": agent, "status": args.get("status")})
+    if name == "my_tasks":
+        res = _http("GET", f"/api/ticket/{room}")
+        if isinstance(res, dict) and "error" in res:
+            return res
+        cards = (res or {}).get("cards", [])
+        mine = [c for c in cards if c.get("assigned_to") == agent and c.get("status") != "done"]
+        return {"agent": agent, "tasks": mine}
+    if name == "signal":
+        return _http("POST", f"/api/ticket/{room}/signals",
+                     {"agent": agent, "kind": args.get("kind") or "note", "text": args.get("text", "")})
+    if name == "ask_human":
+        q = (args.get("question") or "").strip()
+        if not q:
+            return {"error": "question is required"}
+        opts = [str(o) for o in (args.get("options") or [])] or ["yes", "no"]
+        created = _http("POST", f"/api/ticket/{room}/decisions",
+                        {"agent": agent, "question": q, "options": opts})
+        if not isinstance(created, dict) or "id" not in created:
+            return created if isinstance(created, dict) else {"error": "could not create decision"}
+        did = created["id"]
+        # Block-poll until a human answers on the Activity page (or we time out).
+        deadline = time.time() + ASK_HUMAN_TIMEOUT
+        while time.time() < deadline:
+            time.sleep(ASK_HUMAN_POLL)
+            res = _http("GET", f"/api/ticket/{room}/decisions/{did}")
+            if isinstance(res, dict) and res.get("status") == "answered":
+                return {"answer": res.get("answer")}
+        return {"status": "timeout",
+                "detail": "No human answered in time; proceed cautiously or ask again."}
     return {"error": f"unknown tool {name}"}
 
 
