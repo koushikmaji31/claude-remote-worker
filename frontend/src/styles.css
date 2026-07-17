@@ -743,6 +743,15 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
   background: #fc6d26; border-color: #fc6d26; color: #fff;
 }
 .gl-oauth-btn:hover { background: #e24329; box-shadow: none; }
+/* Jira (Atlassian) brand button + token form (Ticket section, Phase 1) */
+.jira-oauth-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #0052cc; border-color: #0052cc; color: #fff;
+}
+.jira-oauth-btn:hover { background: #0747a6; box-shadow: none; }
+.jira-token-form { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: stretch; }
+.jira-token-form input { flex: 1 1 180px; min-width: 0; }
+.jira-link { margin-top: var(--sp-3); }
 /* Provider sign-in buttons sit side by side (wrap on narrow screens). */
 .gh-oauth-btns { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 
@@ -1241,6 +1250,44 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 }
 .board-card-titlebtn:hover { color: var(--brand-600); }
 .is-done .board-card-titlebtn { color: var(--text-muted); text-decoration: line-through; }
+
+/* Jira mirror cards in the ticket board (source='jira') — read-only, rich. */
+.jira-card { border-left: 3px solid var(--border); }
+.jira-card.prio-highest, .jira-card.prio-high { border-left-color: var(--danger); }
+.jira-card.prio-medium { border-left-color: var(--warning); }
+.jira-card.prio-low, .jira-card.prio-lowest { border-left-color: var(--info); }
+.jira-card-top { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.jira-type {
+  font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: var(--r-sm); color: #fff; flex: none;
+}
+.jira-type.t-bug { background: #e5493a; }
+.jira-type.t-story { background: #36b37e; }
+.jira-type.t-task { background: #4bade8; }
+.jira-type.t-epic { background: #8777d9; }
+.jira-type.t-subtask { background: #4bade8; }
+.jira-key { font-size: 11.5px; color: var(--text-faint); text-decoration: none; }
+.jira-key:hover { color: var(--brand-600); }
+.jira-prio { margin-left: auto; font-size: 10.5px; color: var(--text-faint); }
+.jira-card-title {
+  display: block; font-size: 13.5px; font-weight: 600; line-height: 1.35;
+  color: var(--text); text-decoration: none;
+}
+.jira-card-title:hover { color: var(--brand-600); }
+.jira-card.is-done .jira-card-title { color: var(--text-muted); text-decoration: line-through; }
+.jira-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.jira-assignee {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted);
+  max-width: 72%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.jira-avatar {
+  width: 18px; height: 18px; border-radius: 50%; color: #fff; font-size: 9px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+}
+.jira-src {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .06em; color: var(--text-faint);
+  border: 1px solid var(--border); border-radius: var(--r-sm); padding: 1px 5px;
+}
 .board-card-edit { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-2); }
 .board-card-editrow { display: flex; gap: var(--sp-2); justify-content: flex-end; align-items: center; }
 

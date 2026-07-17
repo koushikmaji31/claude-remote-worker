@@ -5,6 +5,8 @@
 // Polls every 3s. Shared design tokens + .board-*/.ticket-* rules; no emoji.
 import { useEffect, useState, useCallback } from 'react'
 import { getTicket, createCard, updateCard, deleteCard } from '../lib/ticket.js'
+import JiraPanel from './JiraPanel.jsx'
+import { avatarColor } from '../ui/avatarColor.js'
 
 const STATUSES = ['todo', 'doing', 'done']
 const COLUMNS = [
@@ -24,11 +26,48 @@ function relTime(ts) {
   return `${Math.floor(s / 86400)}d ago`
 }
 
+// Jira issue-type -> style slug; priority -> style slug (see .jira-* in styles.css).
+const JIRA_TYPE = { Bug: 'bug', Story: 'story', Task: 'task', Epic: 'epic', 'Sub-task': 'subtask', Subtask: 'subtask' }
+const JIRA_PRIO = { Highest: 'highest', High: 'high', Medium: 'medium', Low: 'low', Lowest: 'lowest' }
+const initials = (name) => (name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
+
+// Read-only mirror of a Jira issue (source='jira'). Rich card: type, key, priority
+// stripe, assignee avatar, labels. Moves/edits happen in Jira, not here.
+function JiraCard({ card }) {
+  const m = card.meta || {}
+  const typeSlug = JIRA_TYPE[m.type] || 'task'
+  const prioSlug = JIRA_PRIO[m.priority] || 'none'
+  return (
+    <div className={`board-card jira-card prio-${prioSlug} ${card.status === 'done' ? 'is-done' : ''}`}>
+      <div className="jira-card-top">
+        <span className={`jira-type t-${typeSlug}`}>{m.type || 'Issue'}</span>
+        <a className="jira-key mono" href={card.external_url} target="_blank" rel="noreferrer">{card.external_id}</a>
+        {m.priority && <span className="jira-prio">{m.priority}</span>}
+      </div>
+      <a className="jira-card-title" href={card.external_url} target="_blank" rel="noreferrer">{card.title}</a>
+      {m.labels?.length > 0 && (
+        <div className="jira-labels">{m.labels.map((l) => <span key={l} className="badge">{l}</span>)}</div>
+      )}
+      <div className="board-card-foot">
+        {m.assignee ? (
+          <span className="jira-assignee">
+            <span className="jira-avatar" style={{ background: avatarColor(m.assignee) }}>{initials(m.assignee)}</span>
+            {m.assignee}
+          </span>
+        ) : <span className="faint">Unassigned</span>}
+        <span className="jira-src">JIRA</span>
+      </div>
+    </div>
+  )
+}
+
 function Card({ card, onMove, onSave, onDelete, colId }) {
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState(card.title)
   const [body, setBody] = useState(card.body || '')
   const dirty = title !== card.title || body !== (card.body || '')
+
+  if (card.source === 'jira') return <JiraCard card={card} />
 
   return (
     <div className={`board-card ${card.status === 'done' ? 'is-done' : ''}`}>
@@ -96,6 +135,7 @@ export default function TicketPanel({ pid }) {
 
   return (
     <div className="stack-4">
+      <JiraPanel pid={pid} />
       <section className="panel">
         <header className="panel-head">
           <h2>Board</h2>

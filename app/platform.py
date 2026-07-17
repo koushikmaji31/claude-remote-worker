@@ -155,6 +155,28 @@ def init_db():
             created_at REAL,
             updated_at REAL
         );
+        -- Jira integration (Phase 1): per-user Atlassian identity + per-project
+        -- link to a Jira Cloud project. token_enc is sealed at rest (_seal/_unseal).
+        CREATE TABLE IF NOT EXISTS jira_identities(
+            user_id INTEGER PRIMARY KEY REFERENCES users(id),
+            site TEXT,            -- e.g. yoursite.atlassian.net
+            cloud_id TEXT,        -- Atlassian cloud id (used on the OAuth path)
+            account_id TEXT,
+            email TEXT,
+            display_name TEXT,
+            token_enc TEXT NOT NULL,
+            auth_kind TEXT NOT NULL DEFAULT 'token',  -- 'token' (API token) | 'oauth'
+            connected_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS jira_links(
+            project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+            site TEXT NOT NULL,
+            cloud_id TEXT,
+            project_key TEXT NOT NULL,
+            project_name TEXT,
+            linked_by INTEGER REFERENCES users(id),
+            linked_at REAL NOT NULL
+        );
         """
     )
     # Safe migration for DBs created before the image column existed.
@@ -173,6 +195,15 @@ def init_db():
         tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if "provider" not in tcols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'")
+    # source/external_* let a ticket_card mirror an external issue (Jira) instead of
+    # a locally-authored card. 'local' cards keep the existing behaviour untouched.
+    ccols = {r["name"] for r in conn.execute("PRAGMA table_info(ticket_cards)").fetchall()}
+    for col, ddl in (("source", "source TEXT NOT NULL DEFAULT 'local'"),
+                     ("external_id", "external_id TEXT"),
+                     ("external_url", "external_url TEXT"),
+                     ("meta", "meta TEXT")):
+        if col not in ccols:
+            conn.execute(f"ALTER TABLE ticket_cards ADD COLUMN {ddl}")
     conn.commit()
     conn.close()
 
@@ -1627,14 +1658,27 @@ def _ticket_state(conn, pid: int) -> dict:
         except (ValueError, TypeError):
             tasks = []
         agents.append({"agent": row["agent"], "tasks": tasks, "ts": row["ts"]})
-    cards = [
-        {"id": r["id"], "title": r["title"], "body": r["body"], "status": r["status"],
-         "created_by": r["created_by"], "updated_by": r["updated_by"],
-         "created_at": r["created_at"], "updated_at": r["updated_at"]}
-        for r in conn.execute(
-            "SELECT * FROM ticket_cards WHERE project_id=? ORDER BY id", (pid,)
-        ).fetchall()
-    ]
+    cards = []
+    for r in conn.execute(
+        "SELECT * FROM ticket_cards WHERE project_id=? ORDER BY id", (pid,)
+    ).fetchall():
+        keys = r.keys()
+        source = r["source"] if "source" in keys else "local"
+        meta = None
+        if "meta" in keys and r["meta"]:
+            try:
+                meta = json.loads(r["meta"])
+            except (ValueError, TypeError):
+                meta = None
+        cards.append({
+            "id": r["id"], "title": r["title"], "body": r["body"], "status": r["status"],
+            "created_by": r["created_by"], "updated_by": r["updated_by"],
+            "created_at": r["created_at"], "updated_at": r["updated_at"],
+            "source": source or "local",
+            "external_id": r["external_id"] if "external_id" in keys else None,
+            "external_url": r["external_url"] if "external_url" in keys else None,
+            "meta": meta,
+        })
     return {"ticket": ticket, "agents": agents, "cards": cards}
 
 
@@ -1880,6 +1924,434 @@ def update_card_bus(invite_code: str, cid: int, body: AgentCardPatch, request: R
                            body.dict(exclude_unset=True, exclude={"agent"}),
                            body.agent, allow_done=False)
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ---------- Jira integration (Phase 1: identity + project link) ----------
+# A user connects their Atlassian account with an API token (email + token, the
+# fast path) or "Continue with Atlassian" OAuth. Then a manager links a Jira
+# Cloud project to this platform project. Reads come in Phase 2.
+
+JIRA_OAUTH_CLIENT_ID = os.environ.get("JIRA_CLIENT_ID", "").strip()
+JIRA_OAUTH_CLIENT_SECRET = os.environ.get("JIRA_CLIENT_SECRET", "").strip()
+JIRA_OAUTH_CONFIGURED = bool(JIRA_OAUTH_CLIENT_ID and JIRA_OAUTH_CLIENT_SECRET)
+JIRA_SCOPES = "read:jira-work read:jira-user"
+
+
+def _jira_base_headers(row, token: str):
+    """(base_url, headers) for a Jira identity row — Basic for token auth,
+    Bearer against api.atlassian.com for OAuth."""
+    if (row["auth_kind"] or "token") == "oauth":
+        base = f"https://api.atlassian.com/ex/jira/{row['cloud_id']}/rest/api/3"
+        headers = {"Authorization": f"Bearer {token}"}
+    else:
+        import base64
+        basic = base64.b64encode(f"{row['email']}:{token}".encode()).decode()
+        base = f"https://{row['site']}/rest/api/3"
+        headers = {"Authorization": f"Basic {basic}"}
+    headers.update({"Accept": "application/json", "Content-Type": "application/json"})
+    return base, headers
+
+
+def _jira_api(row, token: str, method: str, path: str, body=None, timeout: int = 15):
+    """Call the Jira Cloud REST API v3. Returns (status, json, headers)."""
+    import requests
+
+    base, headers = _jira_base_headers(row, token)
+    url = path if path.startswith("http") else f"{base}{path}"
+    resp = requests.request(method, url, headers=headers, json=body, timeout=timeout)
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    return resp.status_code, data, resp.headers
+
+
+def _jira_identity(conn, user_id: int):
+    return conn.execute("SELECT * FROM jira_identities WHERE user_id=?", (user_id,)).fetchone()
+
+
+def _jira_link_row(conn, pid: int):
+    return conn.execute("SELECT * FROM jira_links WHERE project_id=?", (pid,)).fetchone()
+
+
+class JiraConnectIn(BaseModel):
+    site: str
+    email: str
+    token: str
+
+
+@app.post("/api/jira/connect")
+def jira_connect(body: JiraConnectIn, user=Depends(current_user)):
+    """Validate an Atlassian API token (email + token against a site) and store it sealed."""
+    site = body.site.strip().replace("https://", "").replace("http://", "").strip("/")
+    email, token = body.email.strip(), body.token.strip()
+    if not (site and email and token):
+        raise HTTPException(400, "site, email and token are required")
+    probe = {"auth_kind": "token", "site": site, "email": email, "cloud_id": None}
+    try:
+        status, data, _ = _jira_api(probe, token, "GET", "/myself")
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach Jira ({site}): {e}")
+    if status in (401, 403):
+        raise HTTPException(401, "Jira rejected the token (check email + token + site)")
+    if status != 200:
+        raise HTTPException(400, f"Jira error ({status}): {data.get('message', 'unknown') if isinstance(data, dict) else 'unknown'}")
+    conn = db()
+    try:
+        conn.execute(
+            """INSERT INTO jira_identities(user_id, site, cloud_id, account_id, email, display_name, token_enc, auth_kind, connected_at)
+               VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 site=excluded.site, cloud_id=excluded.cloud_id, account_id=excluded.account_id,
+                 email=excluded.email, display_name=excluded.display_name, token_enc=excluded.token_enc,
+                 auth_kind=excluded.auth_kind, connected_at=excluded.connected_at""",
+            (user["id"], site, None, data.get("accountId"), email,
+             data.get("displayName"), _seal(token), "token", time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"connected": True, "account": data.get("displayName") or email, "site": site,
+            "auth_kind": "token", "encrypted": TOKENS_ENCRYPTED}
+
+
+@app.get("/api/jira/status")
+def jira_status(user=Depends(current_user)):
+    conn = db()
+    try:
+        row = _jira_identity(conn, user["id"])
+    finally:
+        conn.close()
+    availability = {"encrypted": TOKENS_ENCRYPTED, "oauth_available": JIRA_OAUTH_CONFIGURED}
+    if not row:
+        return {"connected": False, **availability}
+    return {
+        "connected": True,
+        "account": row["display_name"] or row["email"],
+        "account_id": row["account_id"],
+        "site": row["site"],
+        "auth_kind": row["auth_kind"],
+        "connected_at": row["connected_at"],
+        **availability,
+    }
+
+
+@app.delete("/api/jira/disconnect")
+def jira_disconnect(user=Depends(current_user)):
+    conn = db()
+    try:
+        conn.execute("DELETE FROM jira_identities WHERE user_id=?", (user["id"],))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"connected": False}
+
+
+class JiraLinkIn(BaseModel):
+    project_key: str
+
+
+@app.post("/api/projects/{pid}/jira/link")
+def jira_link_project(pid: int, body: JiraLinkIn, user=Depends(current_user)):
+    """Link a Jira Cloud project (by key) to this project — managers only,
+    validated against the linker's Jira account."""
+    conn = db()
+    try:
+        require_manage(conn, pid, user["id"])
+        idrow = _jira_identity(conn, user["id"])
+        if not idrow:
+            raise HTTPException(400, "Connect your Jira account first")
+        key = body.project_key.strip().upper()
+        if not key:
+            raise HTTPException(400, "project_key is required")
+        token = _unseal(idrow["token_enc"])
+        try:
+            status, data, _ = _jira_api(idrow, token, "GET", f"/project/{key}")
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach Jira: {e}")
+        if status == 404:
+            raise HTTPException(404, f"Jira project {key} not found or not accessible with your account")
+        if status != 200:
+            raise HTTPException(400, f"Jira error ({status}): {data.get('message', 'unknown') if isinstance(data, dict) else 'unknown'}")
+        conn.execute(
+            """INSERT INTO jira_links(project_id, site, cloud_id, project_key, project_name, linked_by, linked_at)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(project_id) DO UPDATE SET
+                 site=excluded.site, cloud_id=excluded.cloud_id, project_key=excluded.project_key,
+                 project_name=excluded.project_name, linked_by=excluded.linked_by, linked_at=excluded.linked_at""",
+            (pid, idrow["site"], idrow["cloud_id"], data.get("key", key),
+             data.get("name"), user["id"], time.time()),
+        )
+        conn.commit()
+        return {
+            "linked": True, "project_key": data.get("key", key), "project_name": data.get("name"),
+            "site": idrow["site"], "url": f"https://{idrow['site']}/browse/{key}",
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects/{pid}/jira")
+def jira_get_link(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        row = _jira_link_row(conn, pid)
+        if not row:
+            return {"linked": False}
+        return {
+            "linked": True, "project_key": row["project_key"], "project_name": row["project_name"],
+            "site": row["site"], "url": f"https://{row['site']}/browse/{row['project_key']}",
+            "linked_at": row["linked_at"],
+        }
+    finally:
+        conn.close()
+
+
+@app.delete("/api/projects/{pid}/jira/link")
+def jira_unlink_project(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_manage(conn, pid, user["id"])
+        conn.execute("DELETE FROM jira_links WHERE project_id=?", (pid,))
+        conn.commit()
+        return {"linked": False}
+    finally:
+        conn.close()
+
+
+# ---- Jira read (Phase 2): mirror issues into the board ----
+
+# Jira statusCategory.key -> our board column category.
+_JIRA_CAT = {"new": "todo", "indeterminate": "doing", "done": "done"}
+_JIRA_COL_ORDER = {"todo": 0, "doing": 1, "done": 2}
+
+
+def _project_jira_ctx(conn, pid: int, requester_id: int):
+    """(link_row, identity_row, token) for reads — the linker's Jira account, else the requester's."""
+    link = _jira_link_row(conn, pid)
+    if not link:
+        raise HTTPException(400, "No Jira project linked to this project")
+    for uid in (link["linked_by"], requester_id):
+        if uid is None:
+            continue
+        idrow = _jira_identity(conn, uid)
+        if idrow:
+            return link, idrow, _unseal(idrow["token_enc"])
+    raise HTTPException(400, "No Jira token available for this project; a manager must reconnect Jira")
+
+
+def _jira_search(idrow, token, jql: str, fields: str, max_results: int = 100):
+    """Run a JQL search, tolerating both the new (/search/jql) and legacy (/search) endpoints."""
+    from urllib.parse import quote
+    q = quote(jql)
+    for path in (f"/search/jql?jql={q}&maxResults={max_results}&fields={fields}",
+                 f"/search?jql={q}&maxResults={max_results}&fields={fields}"):
+        try:
+            status, data, _ = _jira_api(idrow, token, "GET", path)
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach Jira: {e}")
+        if status in (404, 410):
+            continue  # endpoint not available on this deployment -> try the other
+        if status in (401, 403):
+            raise HTTPException(401, "Jira token invalid or lacks access")
+        if status != 200:
+            msg = data.get("message") or (data.get("errorMessages") or ["unknown"])[0] if isinstance(data, dict) else "unknown"
+            raise HTTPException(400, f"Jira error ({status}): {msg}")
+        return data
+    raise HTTPException(400, "Jira search endpoint not available")
+
+
+@app.post("/api/projects/{pid}/jira/sync")
+def jira_sync(pid: int, user=Depends(current_user)):
+    """Mirror the linked Jira project's issues INTO ticket_cards (source='jira'),
+    mapping Jira statusCategory -> todo|doing|done. Member-auth (a human/system
+    path), so the done-mapping never hits the agent-only-Done guard. Upserts by
+    external_id (the Jira key) and prunes jira cards whose issue is gone."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        link, idrow, token = _project_jira_ctx(conn, pid, user["id"])
+        jql = f'project = "{link["project_key"]}" ORDER BY updated DESC'
+        data = _jira_search(idrow, token, jql, "summary,status,issuetype,priority,assignee,labels,updated")
+        who = "jira"
+        now = time.time()
+        seen_keys, created, updated = [], 0, 0
+        for it in data.get("issues", []):
+            key = it.get("key")
+            if not key:
+                continue
+            seen_keys.append(key)
+            f = it.get("fields", {}) or {}
+            st = f.get("status") or {}
+            status = _JIRA_CAT.get(((st.get("statusCategory") or {}).get("key")), "todo")
+            title = f.get("summary", "")
+            meta = json.dumps({
+                "type": (f.get("issuetype") or {}).get("name", ""),
+                "priority": (f.get("priority") or {}).get("name", ""),
+                "assignee": (f.get("assignee") or {}).get("displayName"),
+                "labels": f.get("labels", []) or [],
+                "jira_status": st.get("name", ""),
+            })
+            url = f"https://{link['site']}/browse/{key}"
+            existing = conn.execute(
+                "SELECT id FROM ticket_cards WHERE project_id=? AND source='jira' AND external_id=?",
+                (pid, key),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE ticket_cards SET title=?, status=?, meta=?, external_url=?, updated_by=?, updated_at=? WHERE id=?",
+                    (title, status, meta, url, who, now, existing["id"]),
+                )
+                updated += 1
+            else:
+                conn.execute(
+                    "INSERT INTO ticket_cards(project_id, title, body, status, created_by, updated_by, "
+                    "created_at, updated_at, source, external_id, external_url, meta) "
+                    "VALUES(?,?,?,?,?,?,?,?,'jira',?,?,?)",
+                    (pid, title, "", status, who, who, now, now, key, url, meta),
+                )
+                created += 1
+        if seen_keys:
+            ph = ",".join("?" * len(seen_keys))
+            cur = conn.execute(
+                f"DELETE FROM ticket_cards WHERE project_id=? AND source='jira' AND external_id NOT IN ({ph})",
+                (pid, *seen_keys),
+            )
+        else:
+            cur = conn.execute("DELETE FROM ticket_cards WHERE project_id=? AND source='jira'", (pid,))
+        conn.commit()
+        return {"synced": len(seen_keys), "created": created, "updated": updated,
+                "removed": cur.rowcount, "at": now, "project_key": link["project_key"]}
+    finally:
+        conn.close()
+
+
+# ---- Jira OAuth ("Continue with Atlassian"); inert until JIRA_CLIENT_ID/SECRET set ----
+
+def _jira_redirect_uri() -> str:
+    return f"{_public_base()}/api/jira/oauth/callback"
+
+
+@app.get("/api/jira/oauth/config")
+def jira_oauth_config():
+    return {"configured": JIRA_OAUTH_CONFIGURED}
+
+
+@app.post("/api/jira/oauth/start")
+def jira_oauth_start(body: OAuthStartIn, user=Depends(current_user)):
+    if not JIRA_OAUTH_CONFIGURED:
+        raise HTTPException(400, "Jira OAuth is not configured (set JIRA_CLIENT_ID / JIRA_CLIENT_SECRET)")
+    return_to = body.return_to
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = "/"
+    state = secrets.token_urlsafe(32)
+    conn = db()
+    try:
+        conn.execute("DELETE FROM gh_oauth_states WHERE created_at < ?", (time.time() - GH_OAUTH_STATE_TTL,))
+        conn.execute(
+            "INSERT INTO gh_oauth_states(state, user_id, return_to, created_at, provider) VALUES(?,?,?,?,?)",
+            (state, user["id"], return_to, time.time(), "jira"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    from urllib.parse import urlencode
+
+    params = urlencode({
+        "audience": "api.atlassian.com",
+        "client_id": JIRA_OAUTH_CLIENT_ID,
+        "scope": JIRA_SCOPES,
+        "redirect_uri": _jira_redirect_uri(),
+        "state": state,
+        "response_type": "code",
+        "prompt": "consent",
+    })
+    return {"authorize_url": f"https://auth.atlassian.com/authorize?{params}"}
+
+
+@app.get("/api/jira/oauth/callback")
+def jira_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    from urllib.parse import quote
+
+    def bounce(dest, status, reason=""):
+        sep = "&" if "?" in dest else "?"
+        extra = f"&jira_reason={quote(reason)}" if reason else ""
+        return RedirectResponse(f"{dest}{sep}jira={status}{extra}", status_code=302)
+
+    conn = db()
+    try:
+        conn.execute("DELETE FROM gh_oauth_states WHERE created_at < ?", (time.time() - GH_OAUTH_STATE_TTL,))
+        row = conn.execute("SELECT * FROM gh_oauth_states WHERE state=? AND provider='jira'", (state,)).fetchone()
+        if row:
+            conn.execute("DELETE FROM gh_oauth_states WHERE state=?", (state,))
+        conn.commit()
+        if not row:
+            return bounce("/", "error", "Login link expired — try again")
+        return_to = row["return_to"] or "/"
+        if error:
+            return bounce(return_to, "error", error)
+        if not code:
+            return bounce(return_to, "error", "Atlassian did not return a code")
+
+        import requests
+
+        try:
+            tok = requests.post(
+                "https://auth.atlassian.com/oauth/token",
+                json={
+                    "grant_type": "authorization_code",
+                    "client_id": JIRA_OAUTH_CLIENT_ID,
+                    "client_secret": JIRA_OAUTH_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": _jira_redirect_uri(),
+                },
+                headers={"Accept": "application/json"},
+                timeout=15,
+            ).json()
+        except Exception:
+            return bounce(return_to, "error", "Could not reach Atlassian to exchange the code")
+        access_token = tok.get("access_token")
+        if not access_token:
+            return bounce(return_to, "error", tok.get("error_description") or "Token exchange failed")
+
+        # Resolve the accessible Jira site (cloud id + url).
+        try:
+            res = requests.get(
+                "https://api.atlassian.com/oauth/token/accessible-resources",
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                timeout=15,
+            ).json()
+        except Exception:
+            return bounce(return_to, "error", "Could not list your Atlassian sites")
+        if not isinstance(res, list) or not res:
+            return bounce(return_to, "error", "No Jira site accessible for this account")
+        site_res = res[0]
+        cloud_id = site_res.get("id")
+        site = (site_res.get("url", "")).replace("https://", "").replace("http://", "").strip("/")
+
+        idrow = {"auth_kind": "oauth", "cloud_id": cloud_id, "site": site, "email": None}
+        try:
+            st, me, _ = _jira_api(idrow, access_token, "GET", "/myself")
+        except Exception:
+            return bounce(return_to, "error", "Could not fetch your Jira profile")
+        if st != 200:
+            return bounce(return_to, "error", f"Jira /myself returned {st}")
+
+        conn.execute(
+            """INSERT INTO jira_identities(user_id, site, cloud_id, account_id, email, display_name, token_enc, auth_kind, connected_at)
+               VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 site=excluded.site, cloud_id=excluded.cloud_id, account_id=excluded.account_id,
+                 email=excluded.email, display_name=excluded.display_name, token_enc=excluded.token_enc,
+                 auth_kind=excluded.auth_kind, connected_at=excluded.connected_at""",
+            (row["user_id"], site, cloud_id, me.get("accountId"), me.get("emailAddress"),
+             me.get("displayName"), _seal(access_token), "oauth", time.time()),
+        )
+        conn.commit()
+        return bounce(return_to, "connected")
     finally:
         conn.close()
 
