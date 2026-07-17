@@ -167,6 +167,12 @@ def init_db():
     mcols = {r["name"] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
     if "can_manage" not in mcols:
         conn.execute("ALTER TABLE members ADD COLUMN can_manage INTEGER NOT NULL DEFAULT 0")
+    # provider: which git host an identity / repo-link / oauth-handshake belongs to.
+    # Existing rows predate GitLab support, so they default to 'github'.
+    for table in ("gh_identities", "repo_links", "gh_oauth_states"):
+        tcols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if "provider" not in tcols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN provider TEXT NOT NULL DEFAULT 'github'")
     conn.commit()
     conn.close()
 
@@ -785,25 +791,180 @@ def github_oauth_callback(code: str = "", state: str = "", error: str = ""):
         conn.close()
 
 
+# ---------- GitLab integration (OAuth sign-in, mirrors GitHub) ----------
+# A user connects EITHER GitHub or GitLab; the identity row (keyed by user_id)
+# carries a `provider` so the read path knows which API to call. Register a
+# GitLab OAuth application (gitlab.com/-/user_settings/applications) and set
+# GITLAB_CLIENT_ID / GITLAB_CLIENT_SECRET; callback = <base>/api/gitlab/oauth/callback.
+
+GITLAB_HOST = os.environ.get("GITLAB_HOST", "gitlab.com").strip().rstrip("/")
+GL_API = f"https://{GITLAB_HOST}/api/v4"
+GL_OAUTH_CLIENT_ID = os.environ.get("GITLAB_CLIENT_ID", "").strip()
+GL_OAUTH_CLIENT_SECRET = os.environ.get("GITLAB_CLIENT_SECRET", "").strip()
+GL_OAUTH_CONFIGURED = bool(GL_OAUTH_CLIENT_ID and GL_OAUTH_CLIENT_SECRET)
+
+
+def _gl_api(token: str, method: str, path: str, body=None, timeout: int = 15):
+    """Call the GitLab REST API (v4) with a user token. Returns (status, json, headers)."""
+    import requests
+
+    url = path if path.startswith("http") else f"{GL_API}{path}"
+    resp = requests.request(
+        method,
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        json=body,
+        timeout=timeout,
+    )
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    return resp.status_code, data, resp.headers
+
+
+def _gl_redirect_uri() -> str:
+    return f"{_public_base()}/api/gitlab/oauth/callback"
+
+
+@app.get("/api/gitlab/oauth/config")
+def gitlab_oauth_config():
+    return {"configured": GL_OAUTH_CONFIGURED, "host": GITLAB_HOST}
+
+
+@app.post("/api/gitlab/oauth/start")
+def gitlab_oauth_start(body: OAuthStartIn, user=Depends(current_user)):
+    if not GL_OAUTH_CONFIGURED:
+        raise HTTPException(400, "GitLab OAuth is not configured (set GITLAB_CLIENT_ID / GITLAB_CLIENT_SECRET)")
+    return_to = body.return_to
+    if not return_to.startswith("/") or return_to.startswith("//"):
+        return_to = "/"
+    state = secrets.token_urlsafe(32)
+    conn = db()
+    try:
+        conn.execute(
+            "DELETE FROM gh_oauth_states WHERE created_at < ?", (time.time() - GH_OAUTH_STATE_TTL,)
+        )
+        conn.execute(
+            "INSERT INTO gh_oauth_states(state, user_id, return_to, created_at, provider) VALUES(?,?,?,?,?)",
+            (state, user["id"], return_to, time.time(), "gitlab"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    from urllib.parse import urlencode
+
+    params = urlencode({
+        "client_id": GL_OAUTH_CLIENT_ID,
+        "redirect_uri": _gl_redirect_uri(),
+        "response_type": "code",
+        "scope": "read_api read_user",
+        "state": state,
+    })
+    return {"authorize_url": f"https://{GITLAB_HOST}/oauth/authorize?{params}"}
+
+
+@app.get("/api/gitlab/oauth/callback")
+def gitlab_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """Browser lands here from gitlab.com; the state row is the auth (no bearer token)."""
+    from urllib.parse import quote
+
+    def bounce(dest: str, status: str, reason: str = ""):
+        sep = "&" if "?" in dest else "?"
+        extra = f"&gitlab_reason={quote(reason)}" if reason else ""
+        return RedirectResponse(f"{dest}{sep}gitlab={status}{extra}", status_code=302)
+
+    conn = db()
+    try:
+        conn.execute(
+            "DELETE FROM gh_oauth_states WHERE created_at < ?", (time.time() - GH_OAUTH_STATE_TTL,)
+        )
+        row = conn.execute(
+            "SELECT * FROM gh_oauth_states WHERE state=? AND provider='gitlab'", (state,)
+        ).fetchone()
+        if row:  # single-use
+            conn.execute("DELETE FROM gh_oauth_states WHERE state=?", (state,))
+        conn.commit()
+        if not row:
+            return bounce("/", "error", "Login link expired — try again")
+        return_to = row["return_to"] or "/"
+        if error:
+            return bounce(return_to, "error", error)
+        if not code:
+            return bounce(return_to, "error", "GitLab did not return a code")
+
+        import requests
+
+        try:
+            resp = requests.post(
+                f"https://{GITLAB_HOST}/oauth/token",
+                data={
+                    "client_id": GL_OAUTH_CLIENT_ID,
+                    "client_secret": GL_OAUTH_CLIENT_SECRET,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": _gl_redirect_uri(),
+                },
+                headers={"Accept": "application/json"},
+                timeout=15,
+            )
+            payload = resp.json()
+        except Exception:
+            return bounce(return_to, "error", "Could not reach GitLab to exchange the code")
+        access_token = payload.get("access_token")
+        if not access_token:
+            return bounce(return_to, "error", payload.get("error_description") or "Token exchange failed")
+
+        try:
+            status_code, gl_user, _ = _gl_api(access_token, "GET", "/user")
+        except Exception:
+            return bounce(return_to, "error", "Could not fetch your GitLab profile")
+        if status_code != 200:
+            return bounce(return_to, "error", f"GitLab /user returned {status_code}")
+
+        conn.execute(
+            """INSERT INTO gh_identities(user_id, gh_login, gh_id, token_enc, auth_kind, scopes, connected_at, provider)
+               VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 gh_login=excluded.gh_login, gh_id=excluded.gh_id, token_enc=excluded.token_enc,
+                 auth_kind=excluded.auth_kind, scopes=excluded.scopes, connected_at=excluded.connected_at,
+                 provider=excluded.provider""",
+            (
+                row["user_id"], gl_user["username"], gl_user.get("id"),
+                _seal(access_token), "oauth", payload.get("scope", ""), time.time(), "gitlab",
+            ),
+        )
+        conn.commit()
+        return bounce(return_to, "connected")
+    finally:
+        conn.close()
+
+
 @app.get("/api/github/status")
 def github_status(user=Depends(current_user)):
     conn = db()
     try:
         row = conn.execute(
-            "SELECT gh_login, scopes, auth_kind, connected_at FROM gh_identities WHERE user_id=?", (user["id"],)
+            "SELECT gh_login, scopes, auth_kind, connected_at, provider FROM gh_identities WHERE user_id=?", (user["id"],)
         ).fetchone()
     finally:
         conn.close()
+    availability = {
+        "encrypted": TOKENS_ENCRYPTED,
+        "oauth_available": GH_OAUTH_CONFIGURED,          # GitHub
+        "gitlab_oauth_available": GL_OAUTH_CONFIGURED,   # GitLab
+        "gitlab_host": GITLAB_HOST,
+    }
     if not row:
-        return {"connected": False, "encrypted": TOKENS_ENCRYPTED, "oauth_available": GH_OAUTH_CONFIGURED}
+        return {"connected": False, **availability}
     return {
         "connected": True,
+        "provider": row["provider"] or "github",
         "login": row["gh_login"],
         "scopes": row["scopes"],
         "auth_kind": row["auth_kind"],
         "connected_at": row["connected_at"],
-        "encrypted": TOKENS_ENCRYPTED,
-        "oauth_available": GH_OAUTH_CONFIGURED,
+        **availability,
     }
 
 
@@ -835,37 +996,60 @@ def github_link_repo(pid: int, body: RepoLinkIn, user=Depends(current_user)):
     conn = db()
     try:
         require_manage(conn, pid, user["id"])
-        owner, repo = body.owner.strip(), body.repo.strip()
-        if body.full_name.strip() and "/" in body.full_name:
-            owner, repo = body.full_name.strip().split("/", 1)
-        if not owner or not repo:
-            raise HTTPException(400, "owner and repo are required")
-        token = _user_gh_token(conn, user["id"])
-        try:
-            status, data, _ = _gh_api(token, "GET", f"/repos/{owner}/{repo}")
-        except Exception as e:
-            raise HTTPException(502, f"Could not reach GitHub: {e}")
-        if status == 404:
-            raise HTTPException(404, f"Repo {owner}/{repo} not found or not accessible with your token")
-        if status != 200:
-            raise HTTPException(400, f"GitHub error ({status}): {data.get('message', 'unknown')}")
+        idrow = conn.execute(
+            "SELECT token_enc, provider FROM gh_identities WHERE user_id=?", (user["id"],)
+        ).fetchone()
+        if not idrow:
+            raise HTTPException(400, "Connect a GitHub or GitLab account first")
+        provider = idrow["provider"] or "github"
+        token = _unseal(idrow["token_enc"])
+        full_path = body.full_name.strip() or f"{body.owner.strip()}/{body.repo.strip()}".strip("/")
+        if "/" not in full_path:
+            raise HTTPException(400, "Give the repository as owner/repo (or group/project on GitLab)")
+
+        if provider == "gitlab":
+            from urllib.parse import quote
+            slug = quote(full_path, safe="")  # URL-encoded full path is GitLab's project id
+            try:
+                status, data, _ = _gl_api(token, "GET", f"/projects/{slug}")
+            except Exception as e:
+                raise HTTPException(502, f"Could not reach GitLab: {e}")
+            if status == 404:
+                raise HTTPException(404, f"Project {full_path} not found or not accessible with your account")
+            if status != 200:
+                raise HTTPException(400, f"GitLab error ({status}): {data.get('message', 'unknown') if isinstance(data, dict) else 'unknown'}")
+            canonical = data["path_with_namespace"]          # e.g. group/subgroup/project
+            owner, repo = canonical.rsplit("/", 1)
+            default_branch = data.get("default_branch")
+            html_url, is_private = data.get("web_url"), data.get("visibility") != "public"
+        else:
+            owner, repo = full_path.split("/", 1)
+            try:
+                status, data, _ = _gh_api(token, "GET", f"/repos/{owner}/{repo}")
+            except Exception as e:
+                raise HTTPException(502, f"Could not reach GitHub: {e}")
+            if status == 404:
+                raise HTTPException(404, f"Repo {owner}/{repo} not found or not accessible with your token")
+            if status != 200:
+                raise HTTPException(400, f"GitHub error ({status}): {data.get('message', 'unknown')}")
+            owner, repo = data["owner"]["login"], data["name"]
+            canonical = data["full_name"]
+            default_branch = data.get("default_branch")
+            html_url, is_private = data.get("html_url"), data.get("private")
+
         conn.execute(
-            """INSERT INTO repo_links(project_id, owner, repo, default_branch, linked_by, linked_at)
-               VALUES(?,?,?,?,?,?)
+            """INSERT INTO repo_links(project_id, owner, repo, default_branch, linked_by, linked_at, provider)
+               VALUES(?,?,?,?,?,?,?)
                ON CONFLICT(project_id) DO UPDATE SET
                  owner=excluded.owner, repo=excluded.repo, default_branch=excluded.default_branch,
-                 linked_by=excluded.linked_by, linked_at=excluded.linked_at""",
-            (pid, data["owner"]["login"], data["name"], data.get("default_branch"), user["id"], time.time()),
+                 linked_by=excluded.linked_by, linked_at=excluded.linked_at, provider=excluded.provider""",
+            (pid, owner, repo, default_branch, user["id"], time.time(), provider),
         )
         conn.commit()
         return {
-            "linked": True,
-            "owner": data["owner"]["login"],
-            "repo": data["name"],
-            "full_name": data["full_name"],
-            "default_branch": data.get("default_branch"),
-            "private": data.get("private"),
-            "html_url": data.get("html_url"),
+            "linked": True, "provider": provider,
+            "owner": owner, "repo": repo, "full_name": canonical,
+            "default_branch": default_branch, "private": is_private, "html_url": html_url,
         }
     finally:
         conn.close()
@@ -881,6 +1065,7 @@ def github_get_link(pid: int, user=Depends(current_user)):
             return {"linked": False}
         return {
             "linked": True,
+            "provider": row["provider"] or "github",
             "owner": row["owner"],
             "repo": row["repo"],
             "full_name": f"{row['owner']}/{row['repo']}",
@@ -979,11 +1164,129 @@ def _gh_project_read(conn, pid, user_id, path, params="", cache_key=None):
     return result
 
 
+# ---- GitLab read path: same normalized shapes as GitHub, different API ----
+
+def _project_provider(conn, pid: int) -> str:
+    row = _repo_link_row(conn, pid)
+    return (row["provider"] if row and row["provider"] else "github")
+
+
+def _project_token(conn, pid: int, requester_id: int) -> str:
+    """Read token for either provider: the repo-linker's, else the requester's own."""
+    row = _repo_link_row(conn, pid)
+    for uid in ((row["linked_by"] if row else None), requester_id):
+        if uid is None:
+            continue
+        r = conn.execute("SELECT token_enc FROM gh_identities WHERE user_id=?", (uid,)).fetchone()
+        if r:
+            return _unseal(r["token_enc"])
+    raise HTTPException(400, "No git token available for this repo; a manager must reconnect their account")
+
+
+def _gl_project_slug(owner: str, repo: str) -> str:
+    from urllib.parse import quote
+    return quote(f"{owner}/{repo}", safe="")  # GitLab wants the URL-encoded full path
+
+
+def _gl_read(token: str, path: str, params: str = ""):
+    """GET the GitLab API, mapping errors to HTTP. Returns (data, ratelimit)."""
+    try:
+        status, data, headers = _gl_api(token, "GET", path + params)
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach GitLab: {e}")
+    if status == 401:
+        raise HTTPException(401, "GitLab token invalid or expired")
+    if status == 429:
+        raise HTTPException(429, "GitLab API rate limit exceeded; try again shortly")
+    if status == 404:
+        raise HTTPException(404, "Not found on GitLab (check project access / token scope)")
+    if status >= 400:
+        msg = (data.get("message") or data.get("error")) if isinstance(data, dict) else "unknown"
+        raise HTTPException(400, f"GitLab error ({status}): {msg}")
+    ratelimit = {"remaining": headers.get("RateLimit-Remaining"), "limit": headers.get("RateLimit-Limit")}
+    return data, ratelimit
+
+
+def _gl_project_read(conn, pid, user_id, path, params="", cache_key=None):
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+    row = _repo_link_row(conn, pid)
+    token = _project_token(conn, pid, user_id)
+    slug = _gl_project_slug(row["owner"], row["repo"])
+    data, rl = _gl_read(token, f"/projects/{slug}{path}", params)
+    result = (data, rl, row["owner"], row["repo"])
+    if cache_key:
+        _cache_put(cache_key, result)
+    return result
+
+
+def _gl_branches(conn, pid, user_id):
+    data, rl, owner, repo = _gl_project_read(
+        conn, pid, user_id, "/repository/branches", "?per_page=100", cache_key=("branches", pid)
+    )
+    branches = [{"name": b["name"], "sha": b["commit"]["id"], "protected": b.get("protected", False)} for b in data]
+    return {"repo": f"{owner}/{repo}", "branches": branches, "ratelimit": rl}
+
+
+def _gl_pulls(conn, pid, user_id):
+    data, rl, owner, repo = _gl_project_read(
+        conn, pid, user_id, "/merge_requests", "?state=opened&per_page=50&order_by=updated_at",
+        cache_key=("pulls", pid),
+    )
+    pulls = [{
+        "number": m["iid"], "title": m["title"], "user": (m.get("author") or {}).get("username", "?"),
+        "head": m["source_branch"], "base": m["target_branch"],
+        "draft": m.get("draft", m.get("work_in_progress", False)),
+        "updated_at": m["updated_at"], "html_url": m["web_url"],
+    } for m in data]
+    return {"repo": f"{owner}/{repo}", "pulls": pulls, "ratelimit": rl}
+
+
+def _gl_issues(conn, pid, user_id):
+    data, rl, owner, repo = _gl_project_read(
+        conn, pid, user_id, "/issues", "?state=opened&per_page=50&order_by=updated_at",
+        cache_key=("issues", pid),
+    )
+    issues = [{
+        "number": i["iid"], "title": i["title"], "user": (i.get("author") or {}).get("username", "?"),
+        "comments": i.get("user_notes_count", 0), "labels": i.get("labels", []),
+        "updated_at": i["updated_at"], "html_url": i["web_url"],
+    } for i in data]
+    return {"repo": f"{owner}/{repo}", "issues": issues, "ratelimit": rl}
+
+
+def _gl_pull_detail(conn, pid, user_id, number):
+    detail, rl, owner, repo = _gl_project_read(conn, pid, user_id, f"/merge_requests/{number}")
+    changes, _rl2, _o, _r = _gl_project_read(conn, pid, user_id, f"/merge_requests/{number}/changes")
+    diffs = changes.get("changes", []) if isinstance(changes, dict) else []
+    has_conflicts = detail.get("has_conflicts")
+    return {
+        "repo": f"{owner}/{repo}",
+        "number": detail["iid"], "title": detail["title"], "state": detail["state"],
+        "user": (detail.get("author") or {}).get("username", "?"),
+        "head": detail["source_branch"], "base": detail["target_branch"],
+        "mergeable": (None if has_conflicts is None else not has_conflicts),
+        "mergeable_state": ("dirty" if has_conflicts else "clean") if has_conflicts is not None else "unknown",
+        "additions": None, "deletions": None, "changed_files": len(diffs),
+        "html_url": detail["web_url"],
+        "files": [{
+            "filename": c.get("new_path") or c.get("old_path"),
+            "status": "renamed" if c.get("renamed_file") else "added" if c.get("new_file") else "removed" if c.get("deleted_file") else "modified",
+            "additions": None, "deletions": None, "patch": c.get("diff", ""),
+        } for c in diffs],
+        "ratelimit": rl,
+    }
+
+
 @app.get("/api/projects/{pid}/github/branches")
 def github_branches(pid: int, user=Depends(current_user)):
     conn = db()
     try:
         require_member(conn, pid, user["id"])
+        if _project_provider(conn, pid) == "gitlab":
+            return _gl_branches(conn, pid, user["id"])
         data, rl, owner, repo = _gh_project_read(
             conn, pid, user["id"], "/branches", "?per_page=100", cache_key=("branches", pid)
         )
@@ -998,6 +1301,8 @@ def github_pulls(pid: int, user=Depends(current_user)):
     conn = db()
     try:
         require_member(conn, pid, user["id"])
+        if _project_provider(conn, pid) == "gitlab":
+            return _gl_pulls(conn, pid, user["id"])
         data, rl, owner, repo = _gh_project_read(
             conn, pid, user["id"], "/pulls", "?state=open&per_page=50&sort=updated&direction=desc",
             cache_key=("pulls", pid),
@@ -1017,6 +1322,8 @@ def github_issues(pid: int, user=Depends(current_user)):
     conn = db()
     try:
         require_member(conn, pid, user["id"])
+        if _project_provider(conn, pid) == "gitlab":
+            return _gl_issues(conn, pid, user["id"])
         data, rl, owner, repo = _gh_project_read(
             conn, pid, user["id"], "/issues", "?state=open&per_page=50&sort=updated&direction=desc",
             cache_key=("issues", pid),
@@ -1032,11 +1339,57 @@ def github_issues(pid: int, user=Depends(current_user)):
         conn.close()
 
 
+@app.get("/api/github/repos")
+def github_repos(user=Depends(current_user)):
+    """List the connected user's repositories for whichever provider they linked
+    (GitHub or GitLab), most-recently-active first, up to 100."""
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT token_enc, provider FROM gh_identities WHERE user_id=?", (user["id"],)
+        ).fetchone()
+        if not row:
+            raise HTTPException(400, "Connect a GitHub or GitLab account first")
+        token = _unseal(row["token_enc"])
+        provider = row["provider"] or "github"
+    finally:
+        conn.close()
+
+    if provider == "gitlab":
+        status, data, _ = _gl_api(
+            token, "GET",
+            "/projects?membership=true&per_page=100&order_by=last_activity_at&simple=true",
+        )
+        if status != 200 or not isinstance(data, list):
+            raise HTTPException(status if status >= 400 else 502, "Failed to list GitLab projects")
+        repos = [{
+            "full_name": r["path_with_namespace"],
+            "private": r.get("visibility") != "public",
+            "description": r.get("description") or "",
+        } for r in data]
+    else:
+        status, data, _ = _gh_api(
+            token, "GET",
+            "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member",
+        )
+        if status != 200 or not isinstance(data, list):
+            raise HTTPException(status if status >= 400 else 502, "Failed to list GitHub repositories")
+        repos = [{
+            "full_name": r["full_name"],
+            "private": r.get("private", False),
+            "description": r.get("description") or "",
+        } for r in data]
+
+    return {"provider": provider, "repos": repos}
+
+
 @app.get("/api/projects/{pid}/github/pulls/{number}")
 def github_pull_detail(pid: int, number: int, user=Depends(current_user)):
     conn = db()
     try:
         require_member(conn, pid, user["id"])
+        if _project_provider(conn, pid) == "gitlab":
+            return _gl_pull_detail(conn, pid, user["id"], number)
         detail, rl, owner, repo = _gh_project_read(conn, pid, user["id"], f"/pulls/{number}")
         files, _rl2, _o, _r = _gh_project_read(conn, pid, user["id"], f"/pulls/{number}/files", "?per_page=100")
         return {

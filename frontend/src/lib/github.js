@@ -12,11 +12,19 @@ export const ghOAuthConfig = () => api('/api/github/oauth/config')
 export const ghOAuthStart = (returnTo) =>
   api('/api/github/oauth/start', { method: 'POST', body: { return_to: returnTo } })
 
+// --- GitLab OAuth (mirrors GitHub; a user connects one provider or the other) ---
+export const glOAuthConfig = () => api('/api/gitlab/oauth/config')
+export const glOAuthStart = (returnTo) =>
+  api('/api/gitlab/oauth/start', { method: 'POST', body: { return_to: returnTo } })
+
 export const githubConnect = (token) =>
   api('/api/github/connect', { method: 'POST', body: { token } })
 
 export const githubDisconnect = () =>
   api('/api/github/disconnect', { method: 'DELETE' })
+
+// List the connected user's repositories (GitHub or GitLab, whichever they linked).
+export const listRepos = () => api('/api/github/repos')
 
 // --- Repo link (per-project) ---
 export const getRepoLink = (pid) => api(`/api/projects/${pid}/github`)

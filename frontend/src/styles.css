@@ -732,7 +732,88 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .gh-file .git-diff { margin-top: var(--sp-2); }
 
 /* Phase 3: GitHub OAuth + branch-history graph */
-.gh-oauth-btn { display: inline-flex; align-items: center; gap: 8px; }
+/* Brand sign-in buttons override the app's orange .btn with vendor colors. */
+.gh-oauth-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #24292e; border-color: #24292e; color: #fff;
+}
+.gh-oauth-btn:hover { background: #30363d; box-shadow: none; }
+.gl-oauth-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #fc6d26; border-color: #fc6d26; color: #fff;
+}
+.gl-oauth-btn:hover { background: #e24329; box-shadow: none; }
+/* Provider sign-in buttons sit side by side (wrap on narrow screens). */
+.gh-oauth-btns { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+
+/* Connected-account header + status affordances */
+.gh-acct-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3); flex-wrap: wrap;
+}
+.gh-acct-actions {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+}
+.gh-conn-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text);
+}
+.gh-conn-badge strong,
+.gh-conn-badge .gh-conn-login { font-weight: 500; }
+.gh-conn-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--success); flex: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 25%, transparent);
+}
+.gh-disconnect {
+  background: transparent; border: none; color: var(--text-faint);
+  font-size: 12px; cursor: pointer; padding: 2px 4px;
+}
+.gh-disconnect:hover { color: var(--text); }
+
+/* Repo picker combo box */
+.gh-repo-combo { position: relative; }
+.gh-repo-combo input { width: 100%; }
+.gh-repo-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px;
+  max-height: 260px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: var(--shadow-md); z-index: 20;
+}
+.gh-repo-option {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 8px 12px; cursor: pointer; font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.gh-repo-option:last-child { border-bottom: none; }
+.gh-repo-option:hover,
+.gh-repo-option.active { background: var(--surface-2); }
+.gh-repo-empty {
+  padding: 10px 12px; color: var(--text-faint); font-size: 13px;
+}
+
+/* Toast notifications */
+.toast-stack {
+  position: fixed; right: 16px; bottom: 16px;
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  z-index: 1000; pointer-events: none;
+}
+.toast {
+  pointer-events: auto; min-width: 240px; max-width: 340px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--success); border-radius: var(--r-md);
+  box-shadow: var(--shadow-md); padding: 12px 14px;
+  font-size: 13px; color: var(--text);
+  animation: toast-in .25s ease;
+}
+@keyframes toast-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}
+
 .gh-pat-fallback { margin-top: var(--sp-3); }
 .gh-pat-fallback summary { cursor: pointer; font-size: 13px; }
 
