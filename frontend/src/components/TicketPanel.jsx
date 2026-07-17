@@ -27,40 +27,70 @@ function relTime(ts) {
   return `${Math.floor(s / 86400)}d ago`
 }
 
-// Jira issue-type -> style slug; priority -> style slug (see .jira-* in styles.css).
-const JIRA_TYPE = { Bug: 'bug', Story: 'story', Task: 'task', Epic: 'epic', 'Sub-task': 'subtask', Subtask: 'subtask' }
 const JIRA_PRIO = { Highest: 'highest', High: 'high', Medium: 'medium', Low: 'low', Lowest: 'lowest' }
 const initials = (name) => (name || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
 
-// Mirror of a Jira issue (source='jira'). Rich card: type, key, priority stripe,
-// assignee avatar, labels. Title/desc are edited in Jira; moving the card runs the
-// real Jira workflow transition (onMove -> POST .../transition), then re-syncs.
+// Atlassian-style issue-type icon: a colored rounded square with a white glyph.
+const TYPE_BG = { Story: '#63ba3c', Bug: '#e5493a', Task: '#4bade8', Epic: '#8777d9', 'Sub-task': '#4bade8', Subtask: '#4bade8' }
+function JiraTypeIcon({ type }) {
+  const t = type || 'Task'
+  const glyph = {
+    Story: <path d="M5 4h6v8l-3-2.2L5 12z" fill="#fff" />,
+    Bug: <circle cx="8" cy="8" r="3.1" fill="#fff" />,
+    Epic: <path d="M9 3.4L4.8 9H7.4l-.7 3.6L11.2 7H8.5z" fill="#fff" />,
+    Task: <path d="M5 8.2l2 2 4-4.3" stroke="#fff" strokeWidth="1.7" fill="none" strokeLinecap="round" strokeLinejoin="round" />,
+  }[t] || <path d="M5.5 8h5M8 5.5v5" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" />
+  return <svg className="jira-type-ic" width="15" height="15" viewBox="0 0 16 16" style={{ background: TYPE_BG[t] || '#4bade8' }} title={t} aria-label={t}>{glyph}</svg>
+}
+
+// Atlassian-style priority icon: colored chevron(s).
+function JiraPrioIcon({ priority }) {
+  const p = priority || ''
+  const color = { Highest: '#cd1317', High: '#e9494a', Medium: '#e97f33', Low: '#2a8735', Lowest: '#0b7a3b' }[p] || '#8993a4'
+  const up = 'M3 8l4-3.5L11 8'
+  const dn = 'M3 6l4 3.5L11 6'
+  const paths = {
+    Highest: [up, 'M3 11l4-3.5L11 11'], High: [up], Low: [dn], Lowest: [dn, 'M3 9l4 3.5L11 9'],
+    Medium: ['M3 6h8', 'M3 9h8'],
+  }[p] || [up]
+  return (
+    <svg className="jira-prio-ic" width="13" height="13" viewBox="0 0 14 14" title={`Priority: ${p}`} aria-label={p}>
+      {paths.map((d, i) => <path key={i} d={d} stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round" />)}
+    </svg>
+  )
+}
+
+// Mirror of a Jira issue (source='jira'), styled like an Atlassian board card: epic
+// tag, summary, then a footer with type icon + key + priority + story points +
+// assignee. Title/desc are edited in Jira; moving runs the real workflow transition.
 function JiraCard({ card, onMove, moving }) {
   const m = card.meta || {}
-  const typeSlug = JIRA_TYPE[m.type] || 'task'
   const prioSlug = JIRA_PRIO[m.priority] || 'none'
   return (
     <div className={`board-card jira-card prio-${prioSlug} ${card.status === 'done' ? 'is-done' : ''}`}>
-      <div className="jira-card-top">
-        <span className={`jira-type t-${typeSlug}`}>{m.type || 'Issue'}</span>
-        <a className="jira-key mono" href={card.external_url} target="_blank" rel="noreferrer">{card.external_id}</a>
-        {m.priority && <span className="jira-prio">{m.priority}</span>}
-      </div>
+      {m.epic_key && (
+        <a className="jira-epic" href={card.external_url} target="_blank" rel="noreferrer"
+          style={{ background: avatarColor(m.epic_name || m.epic_key) }}>{m.epic_name || m.epic_key}</a>
+      )}
       <a className="jira-card-title" href={card.external_url} target="_blank" rel="noreferrer">{card.title}</a>
       {m.labels?.length > 0 && (
         <div className="jira-labels">{m.labels.map((l) => <span key={l} className="badge">{l}</span>)}</div>
       )}
-      <div className="board-card-foot">
-        {m.assignee ? (
-          <span className="jira-assignee">
-            <span className="jira-avatar" style={{ background: avatarColor(m.assignee) }}>{initials(m.assignee)}</span>
-            {m.assignee}
-          </span>
-        ) : <span className="faint">Unassigned</span>}
-        <span className="jira-src">JIRA</span>
+      <div className="jira-card-foot">
+        <span className="jira-foot-left">
+          <JiraTypeIcon type={m.type} />
+          <a className="jira-key" href={card.external_url} target="_blank" rel="noreferrer">{card.external_id}</a>
+        </span>
+        <span className="jira-foot-right">
+          {m.priority && <JiraPrioIcon priority={m.priority} />}
+          {m.points != null && <span className="jira-points" title={`${m.points} story points`}>{m.points}</span>}
+          {m.assignee
+            ? <span className="jira-avatar" title={m.assignee} style={{ background: avatarColor(m.assignee) }}>{initials(m.assignee)}</span>
+            : <span className="jira-avatar unassigned" title="Unassigned">?</span>}
+        </span>
       </div>
-      <div className="board-card-foot jira-moves-row">
-        <span className="faint jira-move-hint">{moving ? 'Transitioning…' : 'Move in Jira:'}</span>
+      <div className="jira-moves-row">
+        <span className="faint jira-move-hint">{moving ? 'Transitioning…' : 'Move:'}</span>
         <div className="board-card-moves">
           {COLUMNS.filter((t) => t.id !== card.status).map((t) => (
             <button key={t.id} className="board-move" title={`Transition ${card.external_id} to ${t.label} in Jira`}
@@ -119,6 +149,7 @@ export default function TicketPanel({ pid }) {
   const [newBody, setNewBody] = useState('')
   const [adding, setAdding] = useState(false)
   const [movingKey, setMovingKey] = useState(null)  // Jira key mid-transition
+  const [assigneeFilter, setAssigneeFilter] = useState(null)  // filter Jira cards by assignee
 
   const poll = useCallback(() => {
     getTicket(pid).then(setData).catch(() => {})
@@ -151,6 +182,11 @@ export default function TicketPanel({ pid }) {
 
   const agents = data?.agents || []
   const cards = data?.cards || []
+  // Distinct Jira assignees, for the filter chips.
+  const assignees = [...new Set(cards.filter((c) => c.source === 'jira').map((c) => c.meta?.assignee).filter(Boolean))].sort()
+  const visible = assigneeFilter
+    ? cards.filter((c) => c.source === 'jira' && c.meta?.assignee === assigneeFilter)
+    : cards
 
   return (
     <div className="stack-4">
@@ -162,6 +198,17 @@ export default function TicketPanel({ pid }) {
         </header>
         <div className="panel-body">
           {error && <div className="alert error">{error}</div>}
+          {assignees.length > 0 && (
+            <div className="jira-filter">
+              <span className="faint jira-filter-label">Assignee</span>
+              <button className={`jira-chip ${!assigneeFilter ? 'on' : ''}`} onClick={() => setAssigneeFilter(null)}>All</button>
+              {assignees.map((a) => (
+                <button key={a} className={`jira-chip ${assigneeFilter === a ? 'on' : ''}`} onClick={() => setAssigneeFilter(a)}>
+                  <span className="jira-avatar sm" style={{ background: avatarColor(a) }}>{initials(a)}</span>{a}
+                </button>
+              ))}
+            </div>
+          )}
           {adding && (
             <form className="board-new" onSubmit={addCard}>
               <input autoFocus value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Ticket title" />
@@ -175,7 +222,7 @@ export default function TicketPanel({ pid }) {
           )}
           <div className="board">
             {COLUMNS.map((col) => {
-              const colCards = cards.filter((c) => (STATUSES.includes(c.status) ? c.status : 'todo') === col.id)
+              const colCards = visible.filter((c) => (STATUSES.includes(c.status) ? c.status : 'todo') === col.id)
               return (
                 <div key={col.id} className="board-col">
                   <div className="board-col-head">

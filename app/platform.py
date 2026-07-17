@@ -2127,6 +2127,9 @@ def jira_unlink_project(pid: int, user=Depends(current_user)):
 # Jira statusCategory.key -> our board column category.
 _JIRA_CAT = {"new": "todo", "indeterminate": "doing", "done": "done"}
 _JIRA_COL_ORDER = {"todo": 0, "doing": 1, "done": 2}
+# Story-points custom field (varies per Jira site; overridable). customfield_10016
+# is the Cloud default. Epic comes from the issue's `parent`.
+JIRA_POINTS_FIELD = os.environ.get("JIRA_POINTS_FIELD", "customfield_10016").strip()
 
 
 def _project_jira_ctx(conn, pid: int, requester_id: int):
@@ -2175,7 +2178,8 @@ def jira_sync(pid: int, user=Depends(current_user)):
         require_member(conn, pid, user["id"])
         link, idrow, token = _project_jira_ctx(conn, pid, user["id"])
         jql = f'project = "{link["project_key"]}" ORDER BY updated DESC'
-        data = _jira_search(idrow, token, jql, "summary,status,issuetype,priority,assignee,labels,updated")
+        fields = f"summary,status,issuetype,priority,assignee,labels,updated,parent,{JIRA_POINTS_FIELD}"
+        data = _jira_search(idrow, token, jql, fields)
         who = "jira"
         now = time.time()
         seen_keys, created, updated = [], 0, 0
@@ -2188,12 +2192,17 @@ def jira_sync(pid: int, user=Depends(current_user)):
             st = f.get("status") or {}
             status = _JIRA_CAT.get(((st.get("statusCategory") or {}).get("key")), "todo")
             title = f.get("summary", "")
+            parent = f.get("parent") or {}
+            points = f.get(JIRA_POINTS_FIELD)
             meta = json.dumps({
                 "type": (f.get("issuetype") or {}).get("name", ""),
                 "priority": (f.get("priority") or {}).get("name", ""),
                 "assignee": (f.get("assignee") or {}).get("displayName"),
                 "labels": f.get("labels", []) or [],
                 "jira_status": st.get("name", ""),
+                "points": points if isinstance(points, (int, float)) else None,
+                "epic_key": parent.get("key"),
+                "epic_name": (parent.get("fields") or {}).get("summary"),
             })
             url = f"https://{link['site']}/browse/{key}"
             existing = conn.execute(
