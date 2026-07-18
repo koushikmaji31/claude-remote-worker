@@ -10,7 +10,6 @@ import {
   ghBranches, ghPulls, ghIssues, ghPullDetail, ghConflicts,
 } from '../lib/github'
 import BranchGraph from './BranchGraph.jsx'
-import PeerActivity from './PeerActivity.jsx'
 
 // Merge-conflict preview: pick two branches and ask the server whether merging
 // head into base would conflict. Exact — the backend runs `git merge-tree` on a
@@ -420,7 +419,7 @@ export default function GitHubPanel({ pid, canManage }) {
       <div className="toast-stack">
         {toasts.map((t) => <div key={t.id} className="toast">{t.msg}</div>)}
       </div>
-      <PeerActivity pid={pid} />{/* #15: live peer diffs; renders only when peers report */}
+      {/* Team-activity (peer diffs) moved to the Fleet > Interactions pane. */}
       {banner?.result === 'error' && (
         <div className="alert error">{banner.provider || 'GitHub'} sign-in failed{banner.reason ? `: ${banner.reason}` : ''}.</div>
       )}

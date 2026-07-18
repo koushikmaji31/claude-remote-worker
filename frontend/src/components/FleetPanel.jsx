@@ -6,6 +6,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { api } from '../api.js'
 import { avatarColor } from '../ui/avatarColor.js'
+import PeerActivity from './PeerActivity.jsx'
 
 function initials(n) {
   return (n || '?').split(/[\s_-]+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase()
@@ -224,6 +225,9 @@ export default function FleetPanel({ pid }) {
 
           {rightView === 'interactions' && (
             <>
+              {/* Team activity (peer diffs) — who's touching which files right now,
+                  with click-to-view live diffs. Moved here from Branches. */}
+              <PeerActivity pid={pid} />
               {!inter && <p className="muted" style={{ padding: '0 4px' }}>Loading…</p>}
               {inter && inter.messages.length === 0 && <p className="muted" style={{ padding: '0 4px' }}>No agent-to-agent messages yet. When agents DM each other on the bus, their exchange shows here.</p>}
               {inter && inter.pairs.length > 0 && (
