@@ -2389,8 +2389,11 @@ def project_fleet(pid: int, user=Depends(current_user)):
     log.sort(key=lambda e: -(e.get("ts") or 0))
     log = log[:30]
 
-    # PRIVATE: only your own roster agents (no auto-discovery of others' agents)
-    names = set(roster)
+    # Show your own roster agents PLUS any agent currently live on the project
+    # bus (auto-discovery for online agents) — otherwise the "N online" count
+    # has no cards behind it. Discovered agents have no roster id, so the card
+    # offers "+ Add to roster". Offline agents show only if they're yours.
+    names = set(roster) | {c for c in online if c}
     names.discard(None); names.discard("")
 
     agents = []
