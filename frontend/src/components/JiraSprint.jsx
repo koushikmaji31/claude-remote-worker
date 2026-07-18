@@ -62,14 +62,19 @@ export default function JiraSprint({ pid }) {
   if (!data) return <section className="panel"><div className="panel-body"><div className="skeleton" style={{ height: 120 }} /></div></section>
 
   const { scope, completed, remaining, by_status, counts } = data
+  const unit = data.unit || 'points'
+  const uLabel = unit === 'points' ? 'pts' : 'issues'
   const pct = scope > 0 ? Math.round((completed / scope) * 100) : 0
 
   return (
     <section className="panel">
-      <header className="panel-head"><h2>Sprint</h2><span className="tag">{pct}% complete</span></header>
+      <header className="panel-head">
+        <h2>Sprint</h2>
+        <span className="tag">{pct}% complete{unit === 'issues' ? ' · no story points, counting issues' : ''}</span>
+      </header>
       <div className="panel-body jira-sprint">
         <div className="jira-stats">
-          <div className="jira-stat"><div className="jira-stat-n">{scope}</div><div className="jira-stat-l">Scope (pts)</div></div>
+          <div className="jira-stat"><div className="jira-stat-n">{scope}</div><div className="jira-stat-l">Scope ({uLabel})</div></div>
           <div className="jira-stat"><div className="jira-stat-n">{completed}</div><div className="jira-stat-l">Done</div></div>
           <div className="jira-stat"><div className="jira-stat-n">{remaining}</div><div className="jira-stat-l">Remaining</div></div>
           <div className="jira-stat"><div className="jira-stat-n">{data.total}</div><div className="jira-stat-l">Issues</div></div>
@@ -87,7 +92,7 @@ export default function JiraSprint({ pid }) {
             {STATUS.map((s) => (
               <span key={s.id} className="jira-legend-item">
                 <span className="jira-legend-swatch" style={{ background: s.color }} />
-                {s.label} <span className="faint">· {by_status[s.id] || 0} pts · {counts[s.id] || 0}</span>
+                {s.label} <span className="faint">· {by_status[s.id] || 0} {uLabel}{unit === 'points' ? ` · ${counts[s.id] || 0}` : ''}</span>
               </span>
             ))}
           </div>

@@ -2250,9 +2250,9 @@ def jira_sprint(pid: int, user=Depends(current_user)):
         rows = conn.execute(
             "SELECT status, updated_at, meta FROM ticket_cards WHERE project_id=? AND source='jira'", (pid,)
         ).fetchall()
-        by_status = {"todo": 0.0, "doing": 0.0, "done": 0.0}
-        counts = {"todo": 0, "doing": 0, "done": 0}
-        done_events = []  # (updated_at, points)
+        pts_by = {"todo": 0.0, "doing": 0.0, "done": 0.0}   # story points per status
+        counts = {"todo": 0, "doing": 0, "done": 0}          # issue counts per status
+        events = []  # (updated_at, points, 1) for done cards
         for r in rows:
             try:
                 m = json.loads(r["meta"]) if r["meta"] else {}
@@ -2260,12 +2260,23 @@ def jira_sprint(pid: int, user=Depends(current_user)):
                 m = {}
             pts = m.get("points")
             pts = pts if isinstance(pts, (int, float)) else 0
-            st = r["status"] if r["status"] in by_status else "todo"
-            by_status[st] += pts
+            st = r["status"] if r["status"] in pts_by else "todo"
+            pts_by[st] += pts
             counts[st] += 1
             if st == "done":
-                done_events.append((r["updated_at"] or time.time(), pts))
-        scope = round(sum(by_status.values()), 1)
+                events.append((r["updated_at"] or time.time(), pts, 1))
+        # Measure in story points when any exist; otherwise fall back to issue count
+        # so a board with no estimates still shows meaningful Done/Remaining.
+        total_pts = sum(pts_by.values())
+        unit = "points" if total_pts > 0 else "issues"
+        if unit == "points":
+            by_status = {k: round(v, 1) for k, v in pts_by.items()}
+            done_events = [(ts, p) for ts, p, _ in events]
+            scope = round(total_pts, 1)
+        else:
+            by_status = {k: float(v) for k, v in counts.items()}
+            done_events = [(ts, 1) for ts, _, _ in events]
+            scope = float(len(rows))
         completed = round(by_status["done"], 1)
         remaining = round(scope - completed, 1)
         # 14-day burndown ending today: ideal is linear scope->0; remaining subtracts
@@ -2284,6 +2295,7 @@ def jira_sprint(pid: int, user=Depends(current_user)):
                 "remaining": round(scope - done_by, 2),
             })
         return {
+            "unit": unit,
             "scope": scope, "completed": completed, "remaining": remaining,
             "by_status": {k: round(v, 1) for k, v in by_status.items()},
             "counts": counts, "total": len(rows), "burndown": burndown, "window_days": DAYS,
