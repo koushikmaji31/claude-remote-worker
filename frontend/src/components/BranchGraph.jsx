@@ -85,24 +85,34 @@ export default function BranchGraph({ pid }) {
     const { rowIndex, laneOf, tipsAt } = base
     const groups = findGroups(commits, rowIndex, tipsAt)
     const groupAt = new Map(groups.map((g) => [g.start, g]))
-    const inGroup = new Map() // commit index -> group (only for collapsed groups)
-    for (const g of groups) if (!expanded.has(g.id)) for (let k = g.start; k < g.end; k++) inGroup.set(k, g)
 
     const rows = []            // {kind:'commit'|'group', ...}
     const rowOfSha = new Map() // every sha -> its rendered row index
     for (let i = 0; i < commits.length; i++) {
       const g = groupAt.get(i)
-      if (g && !expanded.has(g.id)) {
+      if (g) {
+        // Header row shows in BOTH states so it stays a two-way toggle: caret
+        // points ▸ when collapsed, ▾ when open.
+        const open = expanded.has(g.id)
         const idx = rows.length
         rows.push({ kind: 'group', group: g, lane: laneOf.get(g.branch) ?? 0,
-                    count: g.end - g.start, sha: commits[i].sha })
-        for (let k = g.start; k < g.end; k++) rowOfSha.set(commits[k].sha, idx)
+                    count: g.end - g.start, sha: commits[i].sha, open })
+        if (open) {
+          // Reveal the members as their own commit rows (marked grouped -> ↳).
+          for (let k = g.start; k < g.end; k++) {
+            const c = commits[k]
+            rowOfSha.set(c.sha, rows.length)
+            rows.push({ kind: 'commit', c, ci: k, lane: laneOf.get(c.branch) ?? 0, grouped: true })
+          }
+        } else {
+          // Collapsed: every member sha resolves to the single header row.
+          for (let k = g.start; k < g.end; k++) rowOfSha.set(commits[k].sha, idx)
+        }
         i = g.end - 1
       } else {
         const c = commits[i]
         rowOfSha.set(c.sha, rows.length)
-        rows.push({ kind: 'commit', c, ci: i, lane: laneOf.get(c.branch) ?? 0,
-                    grouped: !!(inGroup.get(i)) })
+        rows.push({ kind: 'commit', c, ci: i, lane: laneOf.get(c.branch) ?? 0, grouped: false })
       }
     }
 
@@ -171,10 +181,10 @@ export default function BranchGraph({ pid }) {
                   fill="none" stroke={laneColor(e.color)} strokeWidth="2" strokeLinecap="round" />
               )
             )}
-            {rows.map((r, i) => r.kind === 'group' ? (
+            {rows.map((r, i) => r.kind === 'group' ? (r.open ? null : (
               <rect key={i} x={x(r.lane) - 4} y={y(i) - 5} width="8" height="10" rx="2"
                 fill={laneColor(r.lane)} stroke="var(--surface)" strokeWidth="2" />
-            ) : (
+            )) : (
               <circle key={i} cx={x(r.lane)} cy={y(i)} r={hover === i ? 6 : 4.5}
                 fill={laneColor(r.lane)} stroke="var(--surface)" strokeWidth="2" />
             ))}
@@ -184,9 +194,9 @@ export default function BranchGraph({ pid }) {
             {rows.map((r, i) => r.kind === 'group' ? (
               <button key={i} className="gh-graph-row gh-graph-group" style={{ height: ROW_H }}
                       onClick={() => toggle(r.group.id)} onMouseEnter={() => setHover(i)}>
-                <span className="gh-group-caret" aria-hidden>{'▸'}</span>
+                <span className="gh-group-caret" aria-hidden>{r.open ? '▾' : '▸'}</span>
                 <span className="gh-graph-msg">{r.count} commits</span>
-                <span className="faint">squashed — click to expand</span>
+                <span className="faint">{r.open ? 'click to collapse' : 'squashed — click to expand'}</span>
               </button>
             ) : (
               <a key={i}
