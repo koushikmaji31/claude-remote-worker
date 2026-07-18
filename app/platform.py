@@ -2278,6 +2278,9 @@ def upsert_metrics_bus(invite_code: str, body: MetricsIn, request: Request):
 
 
 STUCK_SECS = int(os.environ.get("ACTIVITY_STUCK_SECS", "600"))
+# An online agent that reported file edits (or used a tool) within this window is
+# treated as actively working, even without a task explicitly marked "doing".
+ACTIVE_SECS = int(os.environ.get("FLEET_ACTIVE_SECS", "300"))  # 5 min
 
 
 @app.get("/api/projects/{pid}/interactions")
@@ -2367,12 +2370,14 @@ def project_fleet(pid: int, user=Depends(current_user)):
     # machine_by_agent lets the detail view fetch that agent's actual diffs.
     files_by_agent = {}
     machine_by_agent = {}
+    edit_ts_by_agent = {}   # agent -> last time it reported file edits
     for machine, d in diff.items():
         ag = d.get("agent") or machine
         perfile = d.get("perfile") or {}
         if not perfile:
             continue
         machine_by_agent[ag] = machine
+        edit_ts_by_agent[ag] = max(edit_ts_by_agent.get(ag, 0), d.get("updated") or 0)
         flist = files_by_agent.setdefault(ag, [])
         for path, info in sorted(perfile.items()):
             flist.append({"path": path,
@@ -2435,6 +2440,13 @@ def project_fleet(pid: int, user=Depends(current_user)):
         decs = dec_by_agent.get(name, [])
         ndec = len(decs)
         mrow = metrics.get(name) or {}
+        nfiles = len(files_by_agent.get(name, []))
+        # actively editing = reported file edits (or a tool metric) within ACTIVE_SECS
+        editing = (name in edit_ts_by_agent and (now - edit_ts_by_agent[name]) < ACTIVE_SECS)
+        tool_fresh = bool(mrow.get("last_tool")) and mrow.get("updated_at") and (now - mrow["updated_at"]) < ACTIVE_SECS
+        active = editing or tool_fresh
+        # what the agent is doing right now (task text, else its live edits)
+        current = doing or (f"editing {nfiles} file{'' if nfiles == 1 else 's'}" if editing and nfiles else None)
 
         # health, by priority
         if name in conflicted:
@@ -2445,7 +2457,7 @@ def project_fleet(pid: int, user=Depends(current_user)):
             health = "stuck"
         elif live == "offline":
             health = "offline"
-        elif doing:
+        elif doing or active:
             health = "working"
         else:
             health = "idle"
@@ -2457,7 +2469,7 @@ def project_fleet(pid: int, user=Depends(current_user)):
             "id": (roster.get(name) or {}).get("id"),
             "planned": name not in online and name in roster,
             "live": live, "health": health,
-            "current": doing, "tool": mrow.get("last_tool") or None,
+            "current": current, "tool": mrow.get("last_tool") or None,
             "files": files_by_agent.get(name, []),
             "machine": machine_by_agent.get(name),
             "tasks_done": done, "tasks_total": len(tasks),
