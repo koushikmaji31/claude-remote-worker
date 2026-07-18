@@ -2238,6 +2238,60 @@ def jira_sync(pid: int, user=Depends(current_user)):
         conn.close()
 
 
+@app.get("/api/projects/{pid}/jira/sprint")
+def jira_sprint(pid: int, user=Depends(current_user)):
+    """Sprint/progress summary + a burndown series, computed from the mirrored Jira
+    cards (points from meta, completion inferred from a done card's updated_at).
+    No live-Jira call — works whenever issues have been synced into the board."""
+    import datetime
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        rows = conn.execute(
+            "SELECT status, updated_at, meta FROM ticket_cards WHERE project_id=? AND source='jira'", (pid,)
+        ).fetchall()
+        by_status = {"todo": 0.0, "doing": 0.0, "done": 0.0}
+        counts = {"todo": 0, "doing": 0, "done": 0}
+        done_events = []  # (updated_at, points)
+        for r in rows:
+            try:
+                m = json.loads(r["meta"]) if r["meta"] else {}
+            except (ValueError, TypeError):
+                m = {}
+            pts = m.get("points")
+            pts = pts if isinstance(pts, (int, float)) else 0
+            st = r["status"] if r["status"] in by_status else "todo"
+            by_status[st] += pts
+            counts[st] += 1
+            if st == "done":
+                done_events.append((r["updated_at"] or time.time(), pts))
+        scope = round(sum(by_status.values()), 1)
+        completed = round(by_status["done"], 1)
+        remaining = round(scope - completed, 1)
+        # 14-day burndown ending today: ideal is linear scope->0; remaining subtracts
+        # points of cards done on/before each day.
+        DAYS = 14
+        today = datetime.date.today()
+        start = today - datetime.timedelta(days=DAYS - 1)
+        burndown = []
+        for i in range(DAYS):
+            d = start + datetime.timedelta(days=i)
+            end_ts = time.mktime((d + datetime.timedelta(days=1)).timetuple())
+            done_by = sum(pts for ts, pts in done_events if ts <= end_ts)
+            burndown.append({
+                "day": d.isoformat(),
+                "ideal": round(scope * (1 - i / (DAYS - 1)), 2) if DAYS > 1 else 0,
+                "remaining": round(scope - done_by, 2),
+            })
+        return {
+            "scope": scope, "completed": completed, "remaining": remaining,
+            "by_status": {k: round(v, 1) for k, v in by_status.items()},
+            "counts": counts, "total": len(rows), "burndown": burndown, "window_days": DAYS,
+        }
+    finally:
+        conn.close()
+
+
 # ---- Jira write (Phase 3): create an issue, transition status back to Jira ----
 
 def _adf(text: str) -> dict:

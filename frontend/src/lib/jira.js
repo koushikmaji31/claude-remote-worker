@@ -26,6 +26,9 @@ export const unlinkJiraProject = (pid) =>
 // --- Read (Phase 2): mirror linked Jira issues into the ticket_cards board ---
 export const syncJira = (pid) => api(`/api/projects/${pid}/jira/sync`, { method: 'POST' })
 
+// --- Sprint progress + burndown (Phase 4d), computed from the mirrored cards ---
+export const jiraSprint = (pid) => api(`/api/projects/${pid}/jira/sprint`)
+
 // --- Write (Phase 3): create an issue, transition status back to Jira ---
 export const jiraCreateIssue = (pid, data) =>
   api(`/api/projects/${pid}/jira/issues`, { method: 'POST', body: data })

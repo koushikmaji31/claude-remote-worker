@@ -1312,6 +1312,30 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .jira-comment-body { color: var(--text-muted); white-space: pre-wrap; }
 .jira-comment-add { display: flex; gap: var(--sp-2); align-items: flex-end; }
 .jira-comment-add textarea { flex: 1; resize: vertical; font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--text); }
+
+/* Sprint panel: stat tiles, status distribution, burndown (Phase 4d) */
+.jira-sprint { display: flex; flex-direction: column; gap: var(--sp-4); }
+.jira-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-2); }
+.jira-stat { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-3); }
+.jira-stat-n { font-size: 22px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.jira-stat-l { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+.jira-dist { display: flex; flex-direction: column; gap: var(--sp-2); }
+.jira-dist-bar { display: flex; gap: 2px; height: 12px; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+.jira-dist-seg { min-width: 3px; border-radius: 2px; }
+.jira-legend { display: flex; flex-wrap: wrap; gap: var(--sp-3); font-size: 12px; color: var(--text-muted); }
+.jira-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.jira-legend-swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.jira-legend-swatch.remaining { background: var(--brand-500); }
+.jira-legend-swatch.ideal { background: var(--text-faint); }
+.jira-burndown-wrap { display: flex; flex-direction: column; gap: 6px; }
+.jira-burndown-title { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; }
+.jira-burndown { margin: 0; }
+.jira-burndown svg { display: block; max-width: 620px; }
+.bd-grid { stroke: var(--border); stroke-width: 1; }
+.bd-axis { fill: var(--text-faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.bd-ideal { stroke: var(--text-faint); stroke-width: 1.5; stroke-dasharray: 4 3; fill: none; }
+.bd-remaining { stroke: var(--brand-500); stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.bd-endpoint { fill: var(--brand-500); stroke: var(--surface); stroke-width: 2; }
 /* Create-a-Jira-issue form in the connect panel (Phase 3) */
 .jira-new { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: stretch; margin-top: var(--sp-3); }
 .jira-new select { flex: 0 0 auto; }

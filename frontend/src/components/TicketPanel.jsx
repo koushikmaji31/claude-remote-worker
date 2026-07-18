@@ -7,6 +7,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { getTicket, createCard, updateCard, deleteCard } from '../lib/ticket.js'
 import { jiraTransition, jiraComments, jiraAddComment, jiraAssignable, jiraEditIssue } from '../lib/jira.js'
 import JiraPanel from './JiraPanel.jsx'
+import JiraSprint from './JiraSprint.jsx'
 import { avatarColor } from '../ui/avatarColor.js'
 
 const STATUSES = ['todo', 'doing', 'done']
@@ -275,6 +276,7 @@ export default function TicketPanel({ pid }) {
   return (
     <div className="stack-4">
       <JiraPanel pid={pid} />
+      {cards.some((c) => c.source === 'jira') && <JiraSprint pid={pid} />}
       <section className="panel">
         <header className="panel-head">
           <h2>Board</h2>
