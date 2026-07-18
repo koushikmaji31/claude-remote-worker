@@ -2405,12 +2405,14 @@ def project_fleet(pid: int, user=Depends(current_user)):
     names = set(roster) | {c for c in online if c}
     names.discard(None); names.discard("")
 
-    # flat narration log (newest first) — signals + claims/pushes from any agent
-    # visible in the fleet (your roster + everyone live on the bus).
-    log = [dict(s) for s in sig_rows if s["agent"] in names]
+    # flat narration log (newest first) — ALL project signals + every CLAIM/PUSHED
+    # broadcast in this room. The room already scopes to this project, so we don't
+    # gate on agent membership: it's a true activity feed that keeps an agent's
+    # entries even after it goes offline (a log, not a live-presence view).
+    log = [dict(s) for s in sig_rows]
     if room:
         for m in _bus_local_get(f"/history?room={room}").get("messages", []):
-            if m.get("to") or (m.get("from") not in names):   # broadcasts by fleet agents
+            if m.get("to"):   # skip DMs; broadcasts only
                 continue
             text = (m.get("text") or "").strip()
             up = text.upper()
