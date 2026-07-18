@@ -72,8 +72,6 @@ export default function FleetPanel({ pid }) {
     return () => clearInterval(iv)
   }, [rightView, pid])
 
-  const names = (data?.agents || []).map((a) => a.name)
-
   const createAgent = async () => {
     if (!nName.trim()) return
     await api(`/api/projects/${pid}/agents`, { method: 'POST', body: { name: nName.trim(), role: nRole.trim() } }).catch((e) => setError(e.message))
@@ -86,7 +84,6 @@ export default function FleetPanel({ pid }) {
   }
   const removeAgent = async (a) => { if (window.confirm(`Delete "${a.name}"?`)) { await api(`/api/projects/${pid}/agents/${a.id}`, { method: 'DELETE' }).catch(() => {}); load() } }
   const addToRoster = async (name) => { await api(`/api/projects/${pid}/agents`, { method: 'POST', body: { name, role: '' } }).catch((e) => setError(e.message)); load() }
-  const assign = async (cid, agent) => { await api(`/api/projects/${pid}/cards/${cid}/assign`, { method: 'POST', body: { agent } }).catch((e) => setError(e.message)); load() }
   const answer = async (did, ans) => { await api(`/api/projects/${pid}/decisions/${did}/answer`, { method: 'POST', body: { answer: ans } }).catch(() => {}); load() }
   const ping = async (a) => {
     const t = a.health === 'blocked'
@@ -184,21 +181,7 @@ export default function FleetPanel({ pid }) {
               </section>
             )
           })}
-
-          {data.unassigned.length > 0 && (
-            <section className="fm-card">
-              <div className="fm-name" style={{ marginBottom: 8 }}>Unassigned tasks</div>
-              {data.unassigned.map((c) => (
-                <div key={c.id} className="fm-unassigned">
-                  <span>#{c.id} {c.title}</span>
-                  <select className="fleet-assign" defaultValue="" onChange={(e) => e.target.value && assign(c.id, e.target.value)}>
-                    <option value="" disabled>Assign to…</option>
-                    {names.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </div>
-              ))}
-            </section>
-          )}
+          {/* Unassigned-tasks list removed — the backlog lives in Jira; no need to duplicate it here. */}
         </div>
 
         {/* RIGHT: toggle between narration log and agent-to-agent interactions */}
