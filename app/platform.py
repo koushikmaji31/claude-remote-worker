@@ -2362,6 +2362,20 @@ def project_fleet(pid: int, user=Depends(current_user)):
                 if any(_ranges_overlap(r1, r2) for r1 in f1[path] for r2 in f2[path]):
                     conflicted.update([m1, m2])
 
+    # Files each agent is currently touching (from the peer-diff bus): agent ->
+    # [{path, added, removed}], so a card can show live, uncommitted changes.
+    files_by_agent = {}
+    for machine, d in diff.items():
+        ag = d.get("agent") or machine
+        perfile = d.get("perfile") or {}
+        if not perfile:
+            continue
+        flist = files_by_agent.setdefault(ag, [])
+        for path, info in sorted(perfile.items()):
+            flist.append({"path": path,
+                          "added": info.get("added", 0),
+                          "removed": info.get("removed", 0)})
+
     tasks_by_agent = {a["agent"]: a for a in state.get("agents", [])}
     dec_by_agent = {}
     for p in pending:
@@ -2438,6 +2452,7 @@ def project_fleet(pid: int, user=Depends(current_user)):
             "planned": name not in online and name in roster,
             "live": live, "health": health,
             "current": doing, "tool": mrow.get("last_tool") or None,
+            "files": files_by_agent.get(name, []),
             "tasks_done": done, "tasks_total": len(tasks),
             "queue": [{"id": c["id"], "title": c["title"], "status": c["status"]} for c in queue],
             "decisions": decs,

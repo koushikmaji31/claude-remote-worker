@@ -146,6 +146,21 @@ export default function FleetPanel({ pid }) {
                   <div className="fm-row"><span className="fm-k">QUEUE</span><span className="fm-v">{a.queue.length ? a.queue.map((c) => `#${c.id}`).join(' ') : '—'}</span></div>
                 </div>
 
+                {a.files && a.files.length > 0 && (
+                  <div className="fm-files">
+                    <div className="fm-files-head">Changing {a.files.length} file{a.files.length === 1 ? '' : 's'}</div>
+                    {a.files.map((f) => (
+                      <div key={f.path} className="fm-file">
+                        <span className="mono fm-file-path" title={f.path}>{f.path}</span>
+                        <span className="fm-file-counts">
+                          {f.added ? <span className="peer-add">+{f.added}</span> : null}
+                          {f.removed ? <span className="peer-del">−{f.removed}</span> : null}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="fm-foot">
                   <span>{a.tasks_done}/{a.tasks_total} tasks</span>
                   {m && fmt(m.tokens_in) && <span>· {fmt(m.tokens_in)}↓ {fmt(m.tokens_out)}↑</span>}
