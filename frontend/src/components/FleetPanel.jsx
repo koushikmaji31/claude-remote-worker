@@ -146,6 +146,8 @@ export default function FleetPanel({ pid }) {
             const h = HEALTH[a.health] || HEALTH.idle
             const m = a.metrics
             const nfiles = (a.files || []).length
+            const adds = (a.files || []).reduce((s, f) => s + (f.added || 0), 0)
+            const dels = (a.files || []).reduce((s, f) => s + (f.removed || 0), 0)
             return (
               <section key={a.name} className={`fm-card clickable ${h.cls}`} role="button" tabIndex={0}
                        onClick={() => setSelected(a.name)}
@@ -170,7 +172,12 @@ export default function FleetPanel({ pid }) {
                   <span>{a.tasks_done}/{a.tasks_total} tasks</span>
                   {m && fmt(m.tokens_in) && <span>· {fmt(m.tokens_in)}↓ {fmt(m.tokens_out)}↑</span>}
                   {m && m.tool_errors > 0 && <span className="crit">· {m.tool_errors} errs</span>}
-                  {nfiles > 0 && <span className="fm-files-hint">· {nfiles} file{nfiles === 1 ? '' : 's'} changed</span>}
+                  {nfiles > 0 && (
+                    <span className="fm-files-hint">· {nfiles} file{nfiles === 1 ? '' : 's'}
+                      {adds ? <span className="peer-add"> +{adds}</span> : null}
+                      {dels ? <span className="peer-del"> −{dels}</span> : null}
+                    </span>
+                  )}
                 </div>
 
                 {/* time-sensitive actions stay on the card (stop click-through) */}
