@@ -222,11 +222,11 @@ export default function Project() {
 
       <main className="main">
         <header className="main-head">
-          <div className="main-head-left">
-            <div>
-              <div className="crumb">{project.name}</div>
-              <h1>{activeLabel}</h1>
-            </div>
+          <div>
+            <div className="crumb">{project.name}</div>
+            <h1>{activeLabel}</h1>
+          </div>
+          <div className="main-actions">
             {view === 'branches' && repo?.linked && (
               <div className="head-repo" title={`default branch: ${repo.default_branch || 'main'}`}>
                 <a className="head-repo-name mono"
@@ -238,8 +238,6 @@ export default function Project() {
                 )}
               </div>
             )}
-          </div>
-          <div className="main-actions">
             {isAdmin && (
               <button className="btn sm" onClick={copyInvite}>
                 {copied ? 'Invite copied' : 'Copy invite link'}
