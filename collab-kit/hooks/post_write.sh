@@ -46,11 +46,13 @@ fi
 [ "$PROJECT" = "global" ] && PROJECT=""
 [ -z "$PROJECT" ] && exit 0
 
-MACHINE=${CONFLICT_MACHINE:-}
-if [ -z "$MACHINE" ]; then
+# agent = bus display name (koushik_2); machine = stable host id.
+AGENT=${CONFLICT_MACHINE:-${CLAUDE_BUS_NAME:-}}
+if [ -z "$AGENT" ]; then
   namefile=/tmp/claude-bus/names/$sid
-  if [ -n "$sid" ] && [ -s "$namefile" ]; then MACHINE=$(cat "$namefile"); else MACHINE=$(hostname 2>/dev/null || echo machine); fi
+  if [ -n "$sid" ] && [ -s "$namefile" ]; then AGENT=$(cat "$namefile"); else AGENT=$(hostname 2>/dev/null || echo agent); fi
 fi
+MACHINE=$(hostname 2>/dev/null || echo machine)
 
 # Repo to diff: explicit override, else the harness project dir, else the tool cwd.
 REPO=${CONFLICT_REPO:-${CLAUDE_PROJECT_DIR:-}}
@@ -59,11 +61,18 @@ if [ -z "$REPO" ]; then
 fi
 [ -z "$REPO" ] && REPO=$(pwd)
 
-# --- compute this machine's footprint -------------------------------------
+# --- compute this machine's footprint (line ranges) + full diff -----------
 footprint=$(python3 "$HERE/diff_hunks.py" "$REPO" "$BASE" 2>/dev/null || echo '{}')
+# Full unified diff vs base (peer diff sharing, ticket #15); empty if base unresolved.
+udiff=$(git -C "$REPO" diff "$BASE" 2>/dev/null || true)
 
-# Build the report payload: {project, machine, base_sha, files}
-payload=$(printf '%s' "$footprint" | python3 "$HERE/format_report.py" payload "$PROJECT" "$MACHINE")
+# Build the report payload: {project, machine, agent, base_sha, files, diff}
+payload=$(python3 -c '
+import json, sys
+fp = json.loads(sys.argv[1] or "{}")
+print(json.dumps({"project": sys.argv[2], "machine": sys.argv[3], "agent": sys.argv[4],
+                  "base_sha": fp.get("base_sha"), "files": fp.get("files", {}), "diff": sys.argv[5]}))
+' "$footprint" "$PROJECT" "$MACHINE" "$AGENT" "$udiff")
 
 # --- report to server & read back conflicts -------------------------------
 resp=$(curl -s -m 5 "${AUTH[@]}" -X POST "$URL/diff/report" \

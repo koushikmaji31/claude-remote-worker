@@ -2790,6 +2790,51 @@ def jira_oauth_callback(code: str = "", state: str = "", error: str = ""):
         conn.close()
 
 
+# ---------- Peer diff sharing (ticket #15): proxy the bus so the web UI can
+# poll with normal user auth + project membership (bus url/token is infra) ----
+def _bus_local_get(path: str):
+    import urllib.request
+    req = urllib.request.Request("http://127.0.0.1:8899" + path, headers={"User-Agent": "platform"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.load(r)
+
+
+@app.get("/api/projects/{pid}/peers")
+def project_peers(pid: int, user=Depends(current_user)):
+    """Who else is touching which files right now (+/- counts). Read-only."""
+    conn = db()
+    try:
+        proj = require_member(conn, pid, user["id"])
+        code = proj["invite_code"]
+    finally:
+        conn.close()
+    try:
+        import urllib.parse
+        return _bus_local_get(f"/diff/peers?project={urllib.parse.quote(code)}")
+    except Exception:
+        return {"peers": []}  # bus down / no room yet -> empty, never error the UI
+
+
+@app.get("/api/projects/{pid}/peers/diff")
+def project_peer_diff(pid: int, machine: str = "", file: str = "", user=Depends(current_user)):
+    """A peer machine's actual unified diff (one file, or all)."""
+    import urllib.error
+    import urllib.parse
+    conn = db()
+    try:
+        proj = require_member(conn, pid, user["id"])
+        code = proj["invite_code"]
+    finally:
+        conn.close()
+    q = urllib.parse.urlencode({"project": code, "machine": machine, "file": file})
+    try:
+        return _bus_local_get(f"/diff/peer?{q}")
+    except urllib.error.HTTPError as e:
+        raise HTTPException(e.code, "peer diff not found")
+    except Exception:
+        raise HTTPException(502, "diff service unreachable")
+
+
 # --- Serve the built frontend (single-origin: API + SPA on one port) ---
 # Registered LAST so all /api routes above take precedence.
 _DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"

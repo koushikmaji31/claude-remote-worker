@@ -103,6 +103,31 @@ TOOLS = [
         "description": "List agents on the chat bus and their pending message counts.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "peers_touching",
+        "description": "See which OTHER machines in your project currently have uncommitted "
+                       "changes, and which files (with +/- line counts). Use this after a "
+                       "merge-conflict warning to find whose diff to read.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": {"type": ["string", "null"], "description": "Optional: only peers touching this file"},
+            },
+        },
+    },
+    {
+        "name": "peer_diff",
+        "description": "Fetch another machine's ACTUAL uncommitted unified diff so you can "
+                       "reconcile directly instead of asking on the bus. Omit file for all files.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "machine": {"type": "string", "description": "The peer machine id (from peers_touching)"},
+                "file": {"type": ["string", "null"], "description": "Optional: just this file's diff"},
+            },
+            "required": ["machine"],
+        },
+    },
 ]
 
 
@@ -120,6 +145,20 @@ def call_tool(name, args):
         return _http("GET", f"/recv?name={args['name']}&timeout=0&room={room}")
     if name == "bus_who":
         return _http("GET", f"/who?room={room}")
+    if name == "peers_touching":
+        import socket
+        res = _http("GET", f"/diff/peers?project={room}&exclude={socket.gethostname()}")
+        peers = res.get("peers", []) if isinstance(res, dict) else []
+        f = args.get("file")
+        if f:
+            peers = [{**p, "files": [x for x in p["files"] if x["path"] == f]} for p in peers]
+            peers = [p for p in peers if p["files"]]
+        return {"peers": peers}
+    if name == "peer_diff":
+        q = f"/diff/peer?project={room}&machine={args.get('machine','')}"
+        if args.get("file"):
+            q += f"&file={args['file']}"
+        return _http("GET", q)
     return {"error": f"unknown tool {name}"}
 
 

@@ -278,11 +278,16 @@ _diff_state = {}          # _diff_state[project][machine] = {"base_sha", "files"
 _diff_lock = threading.Lock()
 
 
+MAX_DIFF_BYTES = 256 * 1024  # per-report unified-diff cap (ticket #15)
+
+
 class DiffReport(BaseModel):
     project: str = ""
-    machine: str = ""
+    machine: str = ""              # stable host id
+    agent: str = ""                # bus name for display (e.g. koushik_2)
     base_sha: Optional[str] = None
-    files: dict = {}       # {path: [[start,end], ...]} on the new/working-tree side
+    files: dict = {}               # {path: [[start,end], ...]} touched line ranges
+    diff: str = ""                 # full unified diff vs base (split per-file server-side)
 
 
 class DiffClear(BaseModel):
@@ -292,6 +297,29 @@ class DiffClear(BaseModel):
 
 def _ranges_overlap(a, b):
     return a[0] <= b[1] and b[0] <= a[1]
+
+
+def _split_diff(unified):
+    """Split a full `git diff` into {path: {"diff","added","removed"}} per file."""
+    out, path, buf = {}, None, []
+
+    def flush():
+        if path and buf:
+            text = "".join(buf)
+            added = sum(1 for l in text.splitlines() if l.startswith("+") and not l.startswith("+++"))
+            removed = sum(1 for l in text.splitlines() if l.startswith("-") and not l.startswith("---"))
+            out[path] = {"diff": text, "added": added, "removed": removed}
+
+    for line in (unified or "").splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            flush(); buf = [line]
+            # "diff --git a/x b/x" -> take the b/ path
+            parts = line.split(" b/", 1)
+            path = parts[1].strip() if len(parts) == 2 else None
+        elif path is not None:
+            buf.append(line)
+    flush()
+    return out
 
 
 def _find_conflicts(project, reporter, files):
@@ -318,10 +346,15 @@ def diff_report(req: DiffReport):
     _require_room(req.project)
     if not req.machine:
         raise HTTPException(status_code=400, detail="machine required")
+    diff = req.diff or ""
+    if len(diff) > MAX_DIFF_BYTES:
+        diff = diff[:MAX_DIFF_BYTES] + "\n[... diff truncated at 256KB ...]\n"
     with _diff_lock:
         conflicts = _find_conflicts(req.project, req.machine, req.files or {})
         _diff_state.setdefault(req.project, {})[req.machine] = {
-            "base_sha": req.base_sha, "files": req.files or {}}
+            "base_sha": req.base_sha, "files": req.files or {},
+            "agent": req.agent or req.machine, "updated": time.time(),
+            "perfile": _split_diff(diff)}
     return {"ok": True, "conflicts": conflicts}
 
 
@@ -338,3 +371,44 @@ def diff_state(project: str = ""):
     _require_room(project)
     with _diff_lock:
         return {"project": project, "state": _diff_state.get(project, {})}
+
+
+# --- Peer diff sharing (ticket #15): see teammates' actual diffs, not just ranges ---
+@app.get("/diff/peers")
+def diff_peers(project: str = "", exclude: str = ""):
+    """Who is touching what, with per-file +/- counts. Excludes `exclude` (the
+    caller's own machine) so an agent sees only OTHERS."""
+    _require_room(project)
+    peers = []
+    with _diff_lock:
+        for machine, e in _diff_state.get(project, {}).items():
+            if machine == exclude:
+                continue
+            perfile = e.get("perfile") or {}
+            files = [{"path": p, "added": d["added"], "removed": d["removed"]}
+                     for p, d in sorted(perfile.items())]
+            if not files:
+                continue
+            peers.append({"machine": machine, "agent": e.get("agent") or machine,
+                          "files": files, "updated": e.get("updated")})
+    peers.sort(key=lambda x: x["agent"])
+    return {"peers": peers}
+
+
+@app.get("/diff/peer")
+def diff_peer(project: str = "", machine: str = "", file: str = ""):
+    """One machine's actual unified diff — a single file, or all concatenated."""
+    _require_room(project)
+    with _diff_lock:
+        e = _diff_state.get(project, {}).get(machine)
+        if not e:
+            raise HTTPException(status_code=404, detail="no diff for that machine")
+        perfile = e.get("perfile") or {}
+        agent = e.get("agent") or machine
+        if file:
+            d = perfile.get(file)
+            if not d:
+                raise HTTPException(status_code=404, detail="no diff for that file")
+            return {"machine": machine, "agent": agent, "file": file, "diff": d["diff"]}
+        alldiff = "".join(d["diff"] for _, d in sorted(perfile.items()))
+        return {"machine": machine, "agent": agent, "file": None, "diff": alldiff}
