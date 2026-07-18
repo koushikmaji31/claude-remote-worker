@@ -2391,11 +2391,21 @@ def project_fleet(pid: int, user=Depends(current_user)):
     sig_by_agent = {}
     for s in sig_rows:
         sig_by_agent.setdefault(s["agent"], []).append(dict(s))
-    # flat narration log (newest first) — YOUR agents' signals + their claims/pushes
-    log = [dict(s) for s in sig_rows if s["agent"] in roster]
+
+    # Fleet-visible agents = your own roster PLUS any agent currently live on the
+    # project bus (auto-discovery for online agents) — otherwise the "N online"
+    # count has no cards behind it, and the narration log stays empty. Discovered
+    # agents have no roster id, so the card offers "+ Add to roster". Offline
+    # agents show only if they're yours.
+    names = set(roster) | {c for c in online if c}
+    names.discard(None); names.discard("")
+
+    # flat narration log (newest first) — signals + claims/pushes from any agent
+    # visible in the fleet (your roster + everyone live on the bus).
+    log = [dict(s) for s in sig_rows if s["agent"] in names]
     if room:
         for m in _bus_local_get(f"/history?room={room}").get("messages", []):
-            if m.get("to") or (m.get("from") not in roster):   # broadcasts by your agents only
+            if m.get("to") or (m.get("from") not in names):   # broadcasts by fleet agents
                 continue
             text = (m.get("text") or "").strip()
             up = text.upper()
@@ -2405,13 +2415,6 @@ def project_fleet(pid: int, user=Depends(current_user)):
                 log.append({"agent": m["from"], "kind": "push", "severity": "low", "text": text[:200], "ts": m.get("ts")})
     log.sort(key=lambda e: -(e.get("ts") or 0))
     log = log[:30]
-
-    # Show your own roster agents PLUS any agent currently live on the project
-    # bus (auto-discovery for online agents) — otherwise the "N online" count
-    # has no cards behind it. Discovered agents have no roster id, so the card
-    # offers "+ Add to roster". Offline agents show only if they're yours.
-    names = set(roster) | {c for c in online if c}
-    names.discard(None); names.discard("")
 
     agents = []
     needs_you = 0
