@@ -4,6 +4,7 @@ import os
 import secrets
 import sqlite3
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -1447,69 +1448,133 @@ GRAPH_COMMITS_PER_BRANCH = 30
 GRAPH_CACHE_TTL = 60.0  # heavier than the list endpoints (1 call per branch)
 
 
+GRAPH_DISK = Path(__file__).resolve().parent.parent / ".graph-cache"
+_graph_refreshing = set()
+_graph_lock = threading.Lock()
+
+
+def _graph_disk_read(pid):
+    try:
+        with open(GRAPH_DISK / f"{pid}.json") as f:
+            return json.load(f)  # {"ts": float, "result": {...}}
+    except (OSError, ValueError):
+        return None
+
+
+def _graph_disk_write(pid, result):
+    try:
+        GRAPH_DISK.mkdir(exist_ok=True)
+        p = GRAPH_DISK / f"{pid}.json"
+        tmp = p.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            json.dump({"ts": time.time(), "result": result}, f)
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def _build_graph_result(conn, pid, user_id):
+    """The expensive part: fetch branches + commits/branch + PRs from GitHub."""
+    from urllib.parse import quote
+    owner, repo, _ = _project_repo(conn, pid)
+    token = _project_gh_token(conn, pid, user_id)
+    link = _repo_link_row(conn, pid)
+    default_branch = link["default_branch"]
+
+    branches_raw, rl = _gh_read(token, f"/repos/{owner}/{repo}/branches", "?per_page=100")
+    # Default branch first so shared history is attributed to it.
+    branches_raw.sort(key=lambda b: (b["name"] != default_branch, b["name"].lower()))
+    truncated = len(branches_raw) > GRAPH_MAX_BRANCHES
+    branches_raw = branches_raw[:GRAPH_MAX_BRANCHES]
+
+    commits: dict = {}
+    for b in branches_raw:
+        data, rl = _gh_read(
+            token,
+            f"/repos/{owner}/{repo}/commits",
+            f"?sha={quote(b['name'], safe='')}&per_page={GRAPH_COMMITS_PER_BRANCH}",
+        )
+        for c in data:
+            if c["sha"] in commits:
+                continue
+            meta = c["commit"]
+            commits[c["sha"]] = {
+                "sha": c["sha"],
+                "parents": [p["sha"] for p in c.get("parents", [])],
+                "message": (meta.get("message") or "").split("\n", 1)[0][:140],
+                "author": (c.get("author") or {}).get("login") or (meta.get("author") or {}).get("name") or "?",
+                "date": (meta.get("committer") or meta.get("author") or {}).get("date"),
+                "branch": b["name"],
+            }
+    nodes = sorted(commits.values(), key=lambda n: n["date"] or "", reverse=True)
+
+    pulls_data, rl = _gh_read(token, f"/repos/{owner}/{repo}/pulls", "?state=open&per_page=50")
+    pulls = [{
+        "number": p["number"], "title": p["title"], "head": p["head"]["ref"],
+        "base": p["base"]["ref"], "draft": p.get("draft", False), "html_url": p["html_url"],
+    } for p in pulls_data]
+
+    return {
+        "repo": f"{owner}/{repo}",
+        "default_branch": default_branch,
+        "branches": [
+            {"name": b["name"], "tip": b["commit"]["sha"], "protected": b.get("protected", False)}
+            for b in branches_raw
+        ],
+        "commits": nodes,
+        "pulls": pulls,
+        "truncated": truncated,
+        "commits_per_branch": GRAPH_COMMITS_PER_BRANCH,
+        "ratelimit": rl,
+    }
+
+
+def _graph_refresh_bg(pid, user_id):
+    """Rebuild the graph off the request path so a stale hit stays instant."""
+    with _graph_lock:
+        if pid in _graph_refreshing:
+            return
+        _graph_refreshing.add(pid)
+
+    def run():
+        try:
+            c = db()
+            try:
+                res = _build_graph_result(c, pid, user_id)
+                _cache_put(("graph", pid), res, ttl=GRAPH_CACHE_TTL)
+                _graph_disk_write(pid, res)
+            finally:
+                c.close()
+        except Exception:
+            pass
+        finally:
+            with _graph_lock:
+                _graph_refreshing.discard(pid)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 @app.get("/api/projects/{pid}/github/graph")
 def github_graph(pid: int, user=Depends(current_user)):
-    from urllib.parse import quote
-
     conn = db()
     try:
         require_member(conn, pid, user["id"])
-        cached = _cache_get(("graph", pid))
-        if cached is not None:
-            return cached
-        owner, repo, _ = _project_repo(conn, pid)
-        token = _project_gh_token(conn, pid, user["id"])
-        link = _repo_link_row(conn, pid)
-        default_branch = link["default_branch"]
-
-        branches_raw, rl = _gh_read(token, f"/repos/{owner}/{repo}/branches", "?per_page=100")
-        # Default branch first so shared history is attributed to it (its lane
-        # claims commits the feature branches merely contain).
-        branches_raw.sort(key=lambda b: (b["name"] != default_branch, b["name"].lower()))
-        truncated = len(branches_raw) > GRAPH_MAX_BRANCHES
-        branches_raw = branches_raw[:GRAPH_MAX_BRANCHES]
-
-        commits: dict = {}
-        for b in branches_raw:
-            data, rl = _gh_read(
-                token,
-                f"/repos/{owner}/{repo}/commits",
-                f"?sha={quote(b['name'], safe='')}&per_page={GRAPH_COMMITS_PER_BRANCH}",
-            )
-            for c in data:
-                if c["sha"] in commits:
-                    continue
-                meta = c["commit"]
-                commits[c["sha"]] = {
-                    "sha": c["sha"],
-                    "parents": [p["sha"] for p in c.get("parents", [])],
-                    "message": (meta.get("message") or "").split("\n", 1)[0][:140],
-                    "author": (c.get("author") or {}).get("login") or (meta.get("author") or {}).get("name") or "?",
-                    "date": (meta.get("committer") or meta.get("author") or {}).get("date"),
-                    "branch": b["name"],  # first branch (default first) whose history listed it
-                }
-        nodes = sorted(commits.values(), key=lambda n: n["date"] or "", reverse=True)
-
-        pulls_data, rl = _gh_read(token, f"/repos/{owner}/{repo}/pulls", "?state=open&per_page=50")
-        pulls = [{
-            "number": p["number"], "title": p["title"], "head": p["head"]["ref"],
-            "base": p["base"]["ref"], "draft": p.get("draft", False), "html_url": p["html_url"],
-        } for p in pulls_data]
-
-        result = {
-            "repo": f"{owner}/{repo}",
-            "default_branch": default_branch,
-            "branches": [
-                {"name": b["name"], "tip": b["commit"]["sha"], "protected": b.get("protected", False)}
-                for b in branches_raw
-            ],
-            "commits": nodes,
-            "pulls": pulls,
-            "truncated": truncated,
-            "commits_per_branch": GRAPH_COMMITS_PER_BRANCH,
-            "ratelimit": rl,
-        }
+        mem = _cache_get(("graph", pid))
+        if mem is not None:
+            return mem
+        # Stale-while-revalidate: any prior build (persisted to disk, survives
+        # restarts) is returned INSTANTLY and refreshed in the background. Only a
+        # truly cold cache blocks on GitHub.
+        disk = _graph_disk_read(pid)
+        if disk is not None:
+            _graph_refresh_bg(pid, user["id"])
+            out = dict(disk.get("result") or {})
+            out["cached"] = True
+            out["stale_age"] = int(time.time() - disk.get("ts", 0))
+            return out
+        result = _build_graph_result(conn, pid, user["id"])
         _cache_put(("graph", pid), result, ttl=GRAPH_CACHE_TTL)
+        _graph_disk_write(pid, result)
         return result
     finally:
         conn.close()

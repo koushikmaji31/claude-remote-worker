@@ -1,14 +1,16 @@
-// Branch-history graph (Phase 3): commit DAG for the linked repo, laid out as
-// colored lanes (one per branch) with a synced HTML row list for messages.
-// Data comes from /api/projects/{pid}/github/graph; lane palette lives in
-// styles.css (--lane-1..8, validated for both themes).
+// Branch-history graph: commit DAG for the linked repo, colored lanes (one per
+// branch) with a synced HTML row list. Runs of minor linear commits are SQUASHED
+// into one expandable node (click to reveal the individual commits). SVG dots,
+// edges and rows are all positioned by the same DISPLAY-row index so they stay
+// aligned as groups expand/collapse. Data: /api/projects/{pid}/github/graph.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ghGraph } from '../lib/github'
 
 const LANE_W = 18
 const ROW_H = 30
 const PAD_Y = 12
-const MAX_COLOR_LANES = 8 // fixed palette slots; extra lanes fall back to gray + label
+const MAX_COLOR_LANES = 8
+const MIN_GROUP = 3 // only collapse runs of at least this many minor commits
 
 const laneColor = (lane) =>
   lane < MAX_COLOR_LANES ? `var(--lane-${lane + 1})` : 'var(--text-faint)'
@@ -23,9 +25,8 @@ function relTime(iso) {
   return new Date(iso).toLocaleDateString()
 }
 
-// Lay the DAG out: lane per branch (default branch first, then most recently
-// updated), row per commit (newest first, as delivered by the API).
-function buildModel({ branches, commits, pulls, default_branch }) {
+// Lanes + which commits are "significant" (branch tips or merges) vs minor.
+function baseModel({ branches, commits, pulls, default_branch }) {
   const rowIndex = new Map(commits.map((c, i) => [c.sha, i]))
   const ordered = [...branches].sort((a, b) => {
     if (a.name === default_branch) return -1
@@ -33,71 +34,114 @@ function buildModel({ branches, commits, pulls, default_branch }) {
     return (rowIndex.get(a.tip) ?? Infinity) - (rowIndex.get(b.tip) ?? Infinity)
   })
   const laneOf = new Map(ordered.map((b, i) => [b.name, i]))
-  const tipsAt = new Map() // sha -> branch names whose tip is this commit
+  const tipsAt = new Map()
   for (const b of ordered) {
     if (!tipsAt.has(b.tip)) tipsAt.set(b.tip, [])
     tipsAt.get(b.tip).push(b.name)
   }
   const prByHead = new Map(pulls.map((p) => [p.head, p]))
+  return { rowIndex, ordered, laneOf, tipsAt, prByHead }
+}
 
-  const edges = []
-  commits.forEach((c, i) => {
-    const lane = laneOf.get(c.branch) ?? 0
-    c.parents.forEach((sha, k) => {
-      const j = rowIndex.get(sha)
-      if (j === undefined) {
-        // Parent beyond the fetch window: draw a fading stub instead of an edge.
-        edges.push({ stub: true, i, lane })
-        return
-      }
-      const pLane = laneOf.get(commits[j].branch) ?? 0
-      // First-parent edges carry the child's lane color (a branch growing);
-      // extra parents carry the parent's (the branch being merged in).
-      edges.push({ i, j, a: lane, b: pLane, color: k === 0 ? lane : pLane })
-    })
-  })
-  return { ordered, laneOf, tipsAt, prByHead, edges }
+// Squash consecutive minor commits (single parent that is the next commit, same
+// lane, not a tip/merge) into groups of >= MIN_GROUP. Returns the group list.
+function findGroups(commits, rowIndex, tipsAt) {
+  const minor = (c, i) =>
+    c.parents.length === 1 &&
+    !tipsAt.has(c.sha) &&
+    rowIndex.get(c.parents[0]) === i + 1 // parent is the very next row -> linear
+  const groups = []
+  let i = 0
+  while (i < commits.length) {
+    if (!minor(commits[i], i)) { i++; continue }
+    let j = i
+    while (j < commits.length && minor(commits[j], j) && commits[j].branch === commits[i].branch) j++
+    // j is exclusive; the run i..j-1 is linear + minor on one branch
+    if (j - i >= MIN_GROUP) groups.push({ id: commits[i].sha, start: i, end: j, branch: commits[i].branch })
+    i = j
+  }
+  return groups
 }
 
 export default function BranchGraph({ pid }) {
   const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [hover, setHover] = useState(-1)
+  const [expanded, setExpanded] = useState(() => new Set()) // group ids the user opened
 
   const load = useCallback(async () => {
-    setLoading(true)
     setError('')
-    try {
-      setData(await ghGraph(pid))
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
+    try { setData(await ghGraph(pid)) } catch (err) { setError(err.message) }
   }, [pid])
-
   useEffect(() => { load() }, [load])
 
-  const model = useMemo(() => (data ? buildModel(data) : null), [data])
+  const base = useMemo(() => (data ? baseModel(data) : null), [data])
+
+  // Build the display rows (commits + collapsed group placeholders), a sha->row
+  // map, and edges over row indices. Recomputed when data or expansion changes.
+  const view = useMemo(() => {
+    if (!data || !base) return null
+    const { commits } = data
+    const { rowIndex, laneOf, tipsAt } = base
+    const groups = findGroups(commits, rowIndex, tipsAt)
+    const groupAt = new Map(groups.map((g) => [g.start, g]))
+    const inGroup = new Map() // commit index -> group (only for collapsed groups)
+    for (const g of groups) if (!expanded.has(g.id)) for (let k = g.start; k < g.end; k++) inGroup.set(k, g)
+
+    const rows = []            // {kind:'commit'|'group', ...}
+    const rowOfSha = new Map() // every sha -> its rendered row index
+    for (let i = 0; i < commits.length; i++) {
+      const g = groupAt.get(i)
+      if (g && !expanded.has(g.id)) {
+        const idx = rows.length
+        rows.push({ kind: 'group', group: g, lane: laneOf.get(g.branch) ?? 0,
+                    count: g.end - g.start, sha: commits[i].sha })
+        for (let k = g.start; k < g.end; k++) rowOfSha.set(commits[k].sha, idx)
+        i = g.end - 1
+      } else {
+        const c = commits[i]
+        rowOfSha.set(c.sha, rows.length)
+        rows.push({ kind: 'commit', c, ci: i, lane: laneOf.get(c.branch) ?? 0,
+                    grouped: !!(inGroup.get(i)) })
+      }
+    }
+
+    const edges = []
+    commits.forEach((c) => {
+      const ri = rowOfSha.get(c.sha)
+      const lane = laneOf.get(c.branch) ?? 0
+      c.parents.forEach((sha, k) => {
+        const rj = rowOfSha.get(sha)
+        if (rj === undefined) { edges.push({ stub: true, i: ri, lane }); return }
+        if (rj === ri) return // collapsed into the same group row
+        const pLane = laneOf.get((commits.find((x) => x.sha === sha) || {}).branch) ?? 0
+        edges.push({ i: ri, j: rj, a: lane, b: pLane, color: k === 0 ? lane : pLane })
+      })
+    })
+    return { rows, edges, groups }
+  }, [data, base, expanded])
 
   if (error) return <div className="alert error">{error}</div>
-  if (!data || !model) return <div className="skeleton" style={{ height: 220 }} />
+  if (!data || !base || !view) return <div className="skeleton" style={{ height: 220 }} />
 
-  const { commits, repo, truncated, commits_per_branch } = data
-  const { ordered, laneOf, tipsAt, prByHead, edges } = model
+  const { repo, truncated, commits_per_branch } = data
+  const { ordered, laneOf, tipsAt, prByHead } = base
+  const { rows, edges } = view
 
   const laneCount = Math.max(ordered.length, 1)
   const gW = laneCount * LANE_W + 10
-  const gH = PAD_Y * 2 + commits.length * ROW_H
+  const gH = PAD_Y * 2 + rows.length * ROW_H
   const x = (lane) => lane * LANE_W + LANE_W / 2 + 4
   const y = (i) => PAD_Y + i * ROW_H + ROW_H / 2
 
-  const hovered = hover >= 0 ? commits[hover] : null
+  const toggle = (id) => setExpanded((prev) => {
+    const next = new Set(prev)
+    next.has(id) ? next.delete(id) : next.add(id)
+    return next
+  })
 
   return (
     <div className="gh-graph-wrap">
-      {/* Legend doubles as direct labels: every lane is named, color is never alone. */}
       <div className="gh-graph-legend" role="list" aria-label="branches">
         {ordered.map((b) => (
           <span key={b.name} className="gh-lane-chip" role="listitem"
@@ -116,81 +160,64 @@ export default function BranchGraph({ pid }) {
           <svg width={gW} height={gH} className="gh-graph-svg" aria-hidden>
             {edges.map((e, k) =>
               e.stub ? (
-                <line key={k}
-                  x1={x(e.lane)} y1={y(e.i)} x2={x(e.lane)} y2={y(e.i) + ROW_H * 0.6}
-                  stroke={laneColor(e.lane)} strokeWidth="2" strokeDasharray="2 4"
-                  strokeLinecap="round" opacity="0.45"
-                />
+                <line key={k} x1={x(e.lane)} y1={y(e.i)} x2={x(e.lane)} y2={y(e.i) + ROW_H * 0.6}
+                  stroke={laneColor(e.lane)} strokeWidth="2" strokeDasharray="2 4" strokeLinecap="round" opacity="0.45" />
               ) : e.a === e.b ? (
-                <line key={k}
-                  x1={x(e.a)} y1={y(e.i)} x2={x(e.b)} y2={y(e.j)}
-                  stroke={laneColor(e.color)} strokeWidth="2" strokeLinecap="round"
-                />
+                <line key={k} x1={x(e.a)} y1={y(e.i)} x2={x(e.b)} y2={y(e.j)}
+                  stroke={laneColor(e.color)} strokeWidth="2" strokeLinecap="round" />
               ) : (
                 <path key={k}
                   d={`M ${x(e.a)} ${y(e.i)} C ${x(e.a)} ${(y(e.i) + y(e.j)) / 2}, ${x(e.b)} ${(y(e.i) + y(e.j)) / 2}, ${x(e.b)} ${y(e.j)}`}
-                  fill="none" stroke={laneColor(e.color)} strokeWidth="2" strokeLinecap="round"
-                />
+                  fill="none" stroke={laneColor(e.color)} strokeWidth="2" strokeLinecap="round" />
               )
             )}
-            {commits.map((c, i) => {
-              const lane = laneOf.get(c.branch) ?? 0
-              return (
-                <circle key={c.sha}
-                  cx={x(lane)} cy={y(i)} r={hover === i ? 6 : 4.5}
-                  fill={laneColor(lane)} stroke="var(--surface)" strokeWidth="2"
-                />
-              )
-            })}
+            {rows.map((r, i) => r.kind === 'group' ? (
+              <rect key={i} x={x(r.lane) - 4} y={y(i) - 5} width="8" height="10" rx="2"
+                fill={laneColor(r.lane)} stroke="var(--surface)" strokeWidth="2" />
+            ) : (
+              <circle key={i} cx={x(r.lane)} cy={y(i)} r={hover === i ? 6 : 4.5}
+                fill={laneColor(r.lane)} stroke="var(--surface)" strokeWidth="2" />
+            ))}
           </svg>
 
           <div className="gh-graph-rows" style={{ paddingTop: PAD_Y }} onMouseLeave={() => setHover(-1)}>
-            {commits.map((c, i) => {
-              const tips = tipsAt.get(c.sha)
-              return (
-                <a key={c.sha}
-                   className={`gh-graph-row ${hover === i ? 'hover' : ''}`}
-                   style={{ height: ROW_H }}
-                   href={`https://github.com/${repo}/commit/${c.sha}`}
-                   target="_blank" rel="noreferrer"
-                   onMouseEnter={() => setHover(i)}>
-                  {tips?.map((name) => {
-                    const pr = prByHead.get(name)
-                    return (
-                      <span key={name} className="gh-lane-chip tip"
-                            style={{ '--lane': laneColor(laneOf.get(name)) }}>
-                        <span className="gh-lane-dot" aria-hidden />
-                        <span className="mono">{name}</span>
-                        {pr && <span className="gh-pr-flag">PR #{pr.number}</span>}
-                      </span>
-                    )
-                  })}
-                  <span className="gh-graph-msg">{c.message}</span>
-                  <span className="faint">{c.author}</span>
-                  <span className="faint mono">{c.sha.slice(0, 7)}</span>
-                  <span className="faint gh-graph-when">{relTime(c.date)}</span>
-                </a>
-              )
-            })}
+            {rows.map((r, i) => r.kind === 'group' ? (
+              <button key={i} className="gh-graph-row gh-graph-group" style={{ height: ROW_H }}
+                      onClick={() => toggle(r.group.id)} onMouseEnter={() => setHover(i)}>
+                <span className="gh-group-caret" aria-hidden>{'▸'}</span>
+                <span className="gh-graph-msg">{r.count} commits</span>
+                <span className="faint">squashed — click to expand</span>
+              </button>
+            ) : (
+              <a key={i}
+                 className={`gh-graph-row ${hover === i ? 'hover' : ''} ${r.grouped ? 'gh-graph-member' : ''}`}
+                 style={{ height: ROW_H }}
+                 href={`https://github.com/${repo}/commit/${r.c.sha}`} target="_blank" rel="noreferrer"
+                 onMouseEnter={() => setHover(i)}>
+                {tipsAt.get(r.c.sha)?.map((name) => {
+                  const pr = prByHead.get(name)
+                  return (
+                    <span key={name} className="gh-lane-chip tip" style={{ '--lane': laneColor(laneOf.get(name)) }}>
+                      <span className="gh-lane-dot" aria-hidden />
+                      <span className="mono">{name}</span>
+                      {pr && <span className="gh-pr-flag">PR #{pr.number}</span>}
+                    </span>
+                  )
+                })}
+                <span className="gh-graph-msg">{r.c.message}</span>
+                <span className="faint">{r.c.author}</span>
+                <span className="faint mono">{r.c.sha.slice(0, 7)}</span>
+                <span className="faint gh-graph-when">{relTime(r.c.date)}</span>
+              </a>
+            ))}
           </div>
-
-          {hovered && (
-            <div className="gh-graph-tip"
-                 style={{ top: PAD_Y + (hover + 1) * ROW_H + 2, left: gW + 8 }}>
-              <div className="gh-graph-tip-msg">{hovered.message}</div>
-              <div className="faint">
-                {hovered.author} · <span className="mono">{hovered.sha.slice(0, 7)}</span>
-                {' · '}{hovered.date ? new Date(hovered.date).toLocaleString() : ''}
-                {' · '}on <span className="mono">{hovered.branch}</span>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
       <p className="faint" style={{ margin: '8px 0 0' }}>
-        Showing the last {commits_per_branch} commits per branch across {ordered.length} branch{ordered.length === 1 ? '' : 'es'}.
-        Rows link to the commit on GitHub.
+        Last {commits_per_branch} commits per branch across {ordered.length} branch{ordered.length === 1 ? '' : 'es'}.
+        Runs of minor commits are squashed — click a group to expand.
+        {data.cached ? ` Served from cache${data.stale_age != null ? ` (${data.stale_age}s old, refreshing)` : ''}.` : ''}
       </p>
     </div>
   )

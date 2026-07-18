@@ -1424,3 +1424,15 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
   background: var(--surface-2); border-color: var(--border);
 }
 .chat-send { flex-shrink: 0; align-self: center; }
+
+/* Branch-graph: squashed commit groups (expandable) */
+.gh-graph-group {
+  width: 100%; text-align: left; font: inherit; cursor: pointer;
+  background: none; border: none; color: var(--text-muted);
+  display: flex; align-items: center; gap: var(--sp-2);
+}
+.gh-graph-group:hover { color: var(--text); }
+.gh-group-caret { color: var(--text-faint); font-size: 11px; }
+.gh-graph-group .gh-graph-msg { font-weight: 600; }
+.gh-graph-member { opacity: 0.9; }
+.gh-graph-member .gh-graph-msg::before { content: '↳ '; color: var(--text-faint); }
