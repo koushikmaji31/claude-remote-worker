@@ -178,6 +178,55 @@ def init_db():
             linked_by INTEGER REFERENCES users(id),
             linked_at REAL NOT NULL
         );
+        -- Human-in-the-loop decisions: an agent asks a yes/no or multiple-choice
+        -- question and blocks; a human answers from the Activity page; the answer
+        -- flows back to unblock the agent. status: pending|answered.
+        CREATE TABLE IF NOT EXISTS decisions(
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER REFERENCES projects(id),
+            agent TEXT,
+            question TEXT NOT NULL,
+            options TEXT NOT NULL,      -- JSON array of option strings
+            status TEXT NOT NULL DEFAULT 'pending',
+            answer TEXT,
+            answered_by TEXT,
+            created_at REAL,
+            answered_at REAL
+        );
+        -- Agent roster: user-created/named logical agents (assignees). A live
+        -- Claude terminal binds to one by joining the bus with that name.
+        CREATE TABLE IF NOT EXISTS agents(
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER REFERENCES projects(id),
+            name TEXT NOT NULL,
+            role TEXT,
+            created_at REAL,
+            UNIQUE(project_id, name)
+        );
+        -- Per-agent fleet metrics (item 4): rolled up from the transcript by the
+        -- watcher. One row per agent; upserted.
+        CREATE TABLE IF NOT EXISTS agent_metrics(
+            project_id INTEGER REFERENCES projects(id),
+            agent TEXT,
+            tokens_in INTEGER DEFAULT 0,
+            tokens_out INTEGER DEFAULT 0,
+            tool_calls INTEGER DEFAULT 0,
+            tool_errors INTEGER DEFAULT 0,
+            updated_at REAL,
+            PRIMARY KEY(project_id, agent)
+        );
+        -- Signals: high-signal updates for the Activity feed (Agent-FM style).
+        -- `kind` is a DYNAMIC, AI-assigned category label (free text, not an enum);
+        -- `severity` (high|low) is set by the distiller / emitter.
+        CREATE TABLE IF NOT EXISTS signals(
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER REFERENCES projects(id),
+            agent TEXT,
+            kind TEXT NOT NULL DEFAULT 'update',
+            severity TEXT NOT NULL DEFAULT 'low',
+            text TEXT NOT NULL,
+            ts REAL
+        );
         """
     )
     # Safe migration for DBs created before the image column existed.
@@ -205,6 +254,26 @@ def init_db():
                      ("meta", "meta TEXT")):
         if col not in ccols:
             conn.execute(f"ALTER TABLE ticket_cards ADD COLUMN {ddl}")
+    # signals.severity added after the table shipped with kind-only
+    scols = {r["name"] for r in conn.execute("PRAGMA table_info(signals)").fetchall()}
+    if scols and "severity" not in scols:
+        conn.execute("ALTER TABLE signals ADD COLUMN severity TEXT NOT NULL DEFAULT 'low'")
+    # ticket_cards.assigned_to: which roster agent owns this task
+    ccols = {r["name"] for r in conn.execute("PRAGMA table_info(ticket_cards)").fetchall()}
+    if ccols and "assigned_to" not in ccols:
+        conn.execute("ALTER TABLE ticket_cards ADD COLUMN assigned_to TEXT")
+    # agent_metrics.last_tool: the most recent tool the agent used (STATE/TOOL row)
+    amcols = {r["name"] for r in conn.execute("PRAGMA table_info(agent_metrics)").fetchall()}
+    if amcols and "last_tool" not in amcols:
+        conn.execute("ALTER TABLE agent_metrics ADD COLUMN last_tool TEXT")
+    # agents.owner_user_id: agents are private to the user who created them.
+    agcols = {r["name"] for r in conn.execute("PRAGMA table_info(agents)").fetchall()}
+    if agcols and "owner_user_id" not in agcols:
+        conn.execute("ALTER TABLE agents ADD COLUMN owner_user_id INTEGER")
+        # backfill pre-existing agents to the project admin so they stay visible
+        conn.execute(
+            "UPDATE agents SET owner_user_id=(SELECT admin_id FROM projects WHERE projects.id=agents.project_id) "
+            "WHERE owner_user_id IS NULL")
     conn.commit()
     conn.close()
 
@@ -1737,6 +1806,7 @@ def _ticket_state(conn, pid: int) -> dict:
                 meta = None
         cards.append({
             "id": r["id"], "title": r["title"], "body": r["body"], "status": r["status"],
+            "assigned_to": r["assigned_to"] if "assigned_to" in keys else None,
             "created_by": r["created_by"], "updated_by": r["updated_by"],
             "created_at": r["created_at"], "updated_at": r["updated_at"],
             "source": source or "local",
@@ -1824,6 +1894,564 @@ def get_ticket(pid: int, user=Depends(current_user)):
         return _ticket_state(conn, pid)
     finally:
         conn.close()
+
+
+# ---------- Activity feed (signal feed across a project's agents) ----------
+# Aggregates signals already flowing on the platform + bus into one
+# attention-ranked stream: blockers (conflict-guard), stuck agents (derived),
+# progress (TodoWrite bridge), and claims/pushes (bus broadcasts). The single
+# `needs_you` count is the product: 0 = keep working, >0 = look.
+ACTIVITY_STUCK_SECS = int(os.environ.get("ACTIVITY_STUCK_SECS", "600"))  # 10 min
+
+
+def _bus_local_get(path: str):
+    """GET a JSON endpoint on the local chat bus (same host → trusted, no token)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8899" + path, timeout=3) as r:
+            return json.loads(r.read().decode())
+    except Exception:
+        return {}
+
+
+def _ranges_overlap(a, b):
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+@app.get("/api/projects/{pid}/activity")
+def project_activity(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        row = conn.execute("SELECT invite_code FROM projects WHERE id=?", (pid,)).fetchone()
+        room = row["invite_code"] if row else None
+        state = _ticket_state(conn, pid)
+    finally:
+        conn.close()
+
+    now = time.time()
+    events = []
+
+    # --- Blockers: overlapping live edits (conflict-guard on the bus) ---
+    diff = _bus_local_get(f"/diff/state?project={room}").get("state", {}) if room else {}
+    machines = list(diff.items())
+    for i in range(len(machines)):
+        for j in range(i + 1, len(machines)):
+            m1, d1 = machines[i]
+            m2, d2 = machines[j]
+            f1, f2 = d1.get("files", {}), d2.get("files", {})
+            for path in set(f1) & set(f2):
+                if any(_ranges_overlap(r1, r2) for r1 in f1[path] for r2 in f2[path]):
+                    events.append({
+                        "type": "blocker", "severity": "high", "ts": now,
+                        "agents": [m1, m2], "file": path,
+                        "title": f"{m1} & {m2} are both editing {path}",
+                        "detail": "Overlapping edits — a merge conflict is forming.",
+                    })
+
+    # --- Progress + stuck: derived from each agent's task list ---
+    for a in state.get("agents", []):
+        tasks = a.get("tasks", [])
+        if not tasks:
+            continue
+        done = sum(1 for t in tasks if t.get("status") == "done")
+        doing = next((t.get("text") for t in tasks if t.get("status") == "doing"), None)
+        unfinished = any(t.get("status") != "done" for t in tasks)
+        ts = a.get("ts") or now
+        age = now - ts
+        if unfinished and age > ACTIVITY_STUCK_SECS:
+            events.append({
+                "type": "stuck", "severity": "high", "ts": ts, "agents": [a["agent"]],
+                "title": f"{a['agent']} may be stuck",
+                "detail": f"No task update in {int(age // 60)} min · {done}/{len(tasks)} done"
+                          + (f" · was: {doing}" if doing else ""),
+            })
+        else:
+            events.append({
+                "type": "progress", "severity": "low", "ts": ts, "agents": [a["agent"]],
+                "title": f"{a['agent']} · {done}/{len(tasks)} tasks done",
+                "detail": (f"now: {doing}" if doing else "all tasks complete"),
+            })
+
+    # --- Claims / pushes: recent broadcasts on the bus ---
+    if room:
+        for m in _bus_local_get(f"/history?room={room}").get("messages", [])[-120:]:
+            if m.get("to"):  # broadcasts only
+                continue
+            text = (m.get("text") or "").strip()
+            up = text.upper()
+            if up.startswith("CLAIM"):
+                events.append({"type": "claim", "severity": "low", "ts": m.get("ts"),
+                               "agents": [m.get("from")], "title": f"{m.get('from')} claimed a path",
+                               "detail": text[:200]})
+            elif up.startswith("PUSHED") or up.startswith("PUSH "):
+                events.append({"type": "push", "severity": "low", "ts": m.get("ts"),
+                               "agents": [m.get("from")], "title": f"{m.get('from')} pushed",
+                               "detail": text[:200]})
+
+    # --- Signals: AI-distilled / agent-narrated updates (dynamic categories) ---
+    sconn = db()
+    try:
+        for r in sconn.execute(
+            "SELECT agent, kind, severity, text, ts FROM signals WHERE project_id=? "
+            "ORDER BY id DESC LIMIT 40", (pid,)
+        ).fetchall():
+            events.append({
+                "type": "signal", "kind": r["kind"],
+                "severity": r["severity"] or "low",
+                "ts": r["ts"], "agents": [r["agent"]],
+                "title": r["text"], "detail": None,
+            })
+    finally:
+        sconn.close()
+
+    # --- Decisions: agents blocked waiting for a human yes/no or choice ---
+    dconn = db()
+    try:
+        for r in dconn.execute(
+            "SELECT id, agent, question, options, created_at FROM decisions "
+            "WHERE project_id=? AND status='pending' ORDER BY id", (pid,)
+        ).fetchall():
+            try:
+                opts = json.loads(r["options"])
+            except (ValueError, TypeError):
+                opts = ["yes", "no"]
+            events.append({
+                "type": "decision", "severity": "high", "ts": r["created_at"],
+                "agents": [r["agent"]], "decision_id": r["id"], "options": opts,
+                "title": f"{r['agent'] or 'An agent'} needs a decision",
+                "detail": r["question"],
+            })
+    finally:
+        dconn.close()
+
+    sev = {"high": 0, "med": 1, "low": 2}
+    events.sort(key=lambda e: (sev.get(e.get("severity"), 3), -(e.get("ts") or 0)))
+    needs_you = sum(1 for e in events if e.get("severity") == "high")
+    return {"needs_you": needs_you, "events": events[:50]}
+
+
+# ---------- Signals (AI-distilled / agent-narrated Activity updates) ----------
+# `kind` is a DYNAMIC category the AI (or agent) chooses — no fixed enum. We only
+# derive a severity fallback from the label's meaning when one isn't supplied.
+_HIGH_HINTS = ("block", "risk", "question", "error", "conflict", "regress",
+               "security", "fail", "bug", "warn", "broke", "stuck", "vuln")
+
+
+def _derive_severity(kind: str, text: str) -> str:
+    blob = f"{kind} {text}".lower()
+    return "high" if any(h in blob for h in _HIGH_HINTS) else "low"
+
+
+class SignalIn(BaseModel):
+    agent: str = ""
+    kind: str = "update"      # dynamic label, AI-assigned
+    severity: Optional[str] = None
+    text: str
+
+
+@app.post("/api/ticket/{invite_code}/signals")
+def create_signal_bus(invite_code: str, body: SignalIn, request: Request):
+    """Post a high-signal update (from the AI distiller or an agent)."""
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        if not (body.text or "").strip():
+            raise HTTPException(400, "text is required")
+        kind = (body.kind or "update").strip().lower()[:32] or "update"
+        sev = body.severity if body.severity in ("high", "low") else _derive_severity(kind, body.text)
+        conn.execute(
+            "INSERT INTO signals(project_id, agent, kind, severity, text, ts) VALUES(?,?,?,?,?,?)",
+            (pid, body.agent, kind, sev, body.text.strip()[:500], time.time()),
+        )
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ---------- Human-in-the-loop decisions ----------
+class DecisionCreate(BaseModel):
+    agent: str = ""
+    question: str
+    options: list = ["yes", "no"]
+
+
+class DecisionAnswer(BaseModel):
+    answer: str
+
+
+@app.post("/api/ticket/{invite_code}/decisions")
+def create_decision_bus(invite_code: str, body: DecisionCreate, request: Request):
+    """Agent (bus token) asks a question and gets a decision id to poll."""
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        if not (body.question or "").strip():
+            raise HTTPException(400, "question is required")
+        opts = [str(o) for o in (body.options or [])] or ["yes", "no"]
+        cur = conn.execute(
+            "INSERT INTO decisions(project_id, agent, question, options, status, created_at) "
+            "VALUES(?,?,?,?,'pending',?)",
+            (pid, body.agent, body.question.strip(), json.dumps(opts), time.time()),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid, "status": "pending"}
+    finally:
+        conn.close()
+
+
+@app.get("/api/ticket/{invite_code}/decisions/{did}")
+def poll_decision_bus(invite_code: str, did: int, request: Request):
+    """Agent polls this until status flips to 'answered'; then reads 'answer'."""
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        row = conn.execute(
+            "SELECT status, answer FROM decisions WHERE id=? AND project_id=?", (did, pid)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Decision not found")
+        return {"status": row["status"], "answer": row["answer"]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{pid}/decisions/{did}/answer")
+def answer_decision(pid: int, did: int, body: DecisionAnswer, user=Depends(current_user)):
+    """A human answers a pending decision from the Activity page."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        row = conn.execute(
+            "SELECT options, status FROM decisions WHERE id=? AND project_id=?", (did, pid)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Decision not found")
+        if row["status"] != "pending":
+            raise HTTPException(409, "Decision already answered")
+        try:
+            opts = json.loads(row["options"])
+        except (ValueError, TypeError):
+            opts = ["yes", "no"]
+        if body.answer not in opts:
+            raise HTTPException(400, f"answer must be one of {opts}")
+        conn.execute(
+            "UPDATE decisions SET status='answered', answer=?, answered_by=?, answered_at=? "
+            "WHERE id=? AND project_id=?",
+            (body.answer, user["name"], time.time(), did, pid),
+        )
+        conn.commit()
+        return {"ok": True, "answer": body.answer}
+    finally:
+        conn.close()
+
+
+# ---------- Agent roster (fleet) ----------
+class AgentIn(BaseModel):
+    name: str
+    role: str = ""
+
+
+class AssignIn(BaseModel):
+    agent: Optional[str] = None   # None/"" un-assigns
+
+
+@app.get("/api/projects/{pid}/agents")
+def list_agents(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        rows = conn.execute(
+            "SELECT id, name, role, created_at FROM agents WHERE project_id=? AND owner_user_id=? ORDER BY name",
+            (pid, user["id"])).fetchall()
+        return {"agents": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{pid}/agents")
+def create_agent(pid: int, body: AgentIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        name = (body.name or "").strip()
+        if not name:
+            raise HTTPException(400, "name is required")
+        # names are unique per project, so a name maps to exactly one owner
+        try:
+            cur = conn.execute(
+                "INSERT INTO agents(project_id, name, role, created_at, owner_user_id) VALUES(?,?,?,?,?)",
+                (pid, name, body.role.strip(), time.time(), user["id"]))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "That agent name is taken in this project")
+        return {"id": cur.lastrowid, "name": name, "role": body.role.strip()}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{pid}/agents/{aid}")
+def update_agent(pid: int, aid: int, body: AgentIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        old = conn.execute("SELECT name FROM agents WHERE id=? AND project_id=? AND owner_user_id=?",
+                           (aid, pid, user["id"])).fetchone()
+        if not old:
+            raise HTTPException(404, "Agent not found")
+        name = (body.name or "").strip()
+        if not name:
+            raise HTTPException(400, "name is required")
+        try:
+            conn.execute("UPDATE agents SET name=?, role=? WHERE id=? AND project_id=?",
+                         (name, body.role.strip(), aid, pid))
+            # keep card assignments pointing at the renamed agent
+            if name != old["name"]:
+                conn.execute("UPDATE ticket_cards SET assigned_to=? WHERE project_id=? AND assigned_to=?",
+                             (name, pid, old["name"]))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "An agent with that name already exists")
+        return {"ok": True, "name": name}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/projects/{pid}/agents/{aid}")
+def delete_agent(pid: int, aid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        conn.execute("DELETE FROM agents WHERE id=? AND project_id=? AND owner_user_id=?",
+                     (aid, pid, user["id"]))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{pid}/cards/{cid}/assign")
+def assign_card(pid: int, cid: int, body: AssignIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        _card_row(conn, pid, cid)
+        conn.execute("UPDATE ticket_cards SET assigned_to=?, updated_at=? WHERE id=? AND project_id=?",
+                     ((body.agent or None), time.time(), cid, pid))
+        conn.commit()
+        return {"ok": True, "assigned_to": body.agent or None}
+    finally:
+        conn.close()
+
+
+class MetricsIn(BaseModel):
+    agent: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tool_calls: int = 0
+    tool_errors: int = 0
+    last_tool: Optional[str] = None
+
+
+@app.post("/api/ticket/{invite_code}/metrics")
+def upsert_metrics_bus(invite_code: str, body: MetricsIn, request: Request):
+    """Watcher posts rolled-up per-agent metrics + last tool (bus token)."""
+    conn = db()
+    try:
+        pid = _bus_project(conn, request, invite_code)
+        conn.execute(
+            "INSERT INTO agent_metrics(project_id, agent, tokens_in, tokens_out, tool_calls, tool_errors, last_tool, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id, agent) DO UPDATE SET "
+            "tokens_in=agent_metrics.tokens_in+excluded.tokens_in, "
+            "tokens_out=agent_metrics.tokens_out+excluded.tokens_out, "
+            "tool_calls=agent_metrics.tool_calls+excluded.tool_calls, "
+            "tool_errors=agent_metrics.tool_errors+excluded.tool_errors, "
+            "last_tool=COALESCE(NULLIF(excluded.last_tool,''), agent_metrics.last_tool), "
+            "updated_at=excluded.updated_at",
+            (pid, body.agent, body.tokens_in, body.tokens_out, body.tool_calls,
+             body.tool_errors, body.last_tool or "", time.time()))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+STUCK_SECS = int(os.environ.get("ACTIVITY_STUCK_SECS", "600"))
+
+
+@app.get("/api/projects/{pid}/interactions")
+def project_interactions(pid: int, user=Depends(current_user)):
+    """Agent-to-agent communication observability — who DM'd whom, and what.
+    Zero-cost: the bus already stores every message; we just surface it."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        row = conn.execute("SELECT invite_code FROM projects WHERE id=?", (pid,)).fetchone()
+        room = row["invite_code"] if row else None
+        mine = {r["name"] for r in conn.execute(
+            "SELECT name FROM agents WHERE project_id=? AND owner_user_id=?", (pid, user["id"])).fetchall()}
+    finally:
+        conn.close()
+    if not room:
+        return {"messages": [], "pairs": []}
+
+    msgs = _bus_local_get(f"/history?room={room}").get("messages", [])
+    directed = []
+    for m in msgs:
+        frm, to, text = m.get("from"), m.get("to"), (m.get("text") or "").strip()
+        if not text or frm == "bus-server":     # drop presence/system noise
+            continue
+        if not to:                                # broadcasts belong in Activity
+            continue
+        # PRIVATE: only exchanges involving one of YOUR agents (the other side is
+        # shown as a bare name, never their roster/state)
+        if frm not in mine and to not in mine:
+            continue
+        directed.append({"from": frm, "to": to, "text": text, "ts": m.get("ts")})
+
+    pairs = {}
+    for m in directed:
+        key = tuple(sorted([m["from"], m["to"]]))
+        p = pairs.setdefault(key, {"a": key[0], "b": key[1], "count": 0, "last_text": "", "last_ts": None})
+        p["count"] += 1
+        if not p["last_ts"] or (m["ts"] or 0) > p["last_ts"]:
+            p["last_ts"] = m["ts"]; p["last_text"] = m["text"][:140]
+    pair_list = sorted(pairs.values(), key=lambda p: -(p["last_ts"] or 0))
+    return {"messages": directed[-80:], "pairs": pair_list}
+
+
+@app.get("/api/projects/{pid}/fleet")
+def project_fleet(pid: int, user=Depends(current_user)):
+    """The observability + assignment roster: one status object per agent."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        row = conn.execute("SELECT invite_code FROM projects WHERE id=?", (pid,)).fetchone()
+        room = row["invite_code"] if row else None
+        state = _ticket_state(conn, pid)
+        # PRIVATE PER USER: only the caller's own agents are visible.
+        roster = {r["name"]: dict(r) for r in conn.execute(
+            "SELECT id, name, role FROM agents WHERE project_id=? AND owner_user_id=?",
+            (pid, user["id"])).fetchall()}
+        metrics = {r["agent"]: dict(r) for r in conn.execute(
+            "SELECT * FROM agent_metrics WHERE project_id=?", (pid,)).fetchall()}
+        sig_rows = conn.execute(
+            "SELECT agent, kind, severity, text, ts FROM signals WHERE project_id=? ORDER BY id DESC LIMIT 200",
+            (pid,)).fetchall()
+        pending = conn.execute(
+            "SELECT id, agent, question, options FROM decisions WHERE project_id=? AND status='pending' ORDER BY id",
+            (pid,)).fetchall()
+    finally:
+        conn.close()
+
+    now = time.time()
+    who = _bus_local_get(f"/who?room={room}") if room else {}
+    presence = who.get("presence", {})
+    online = set(who.get("clients", []))
+
+    # conflicts: agents whose live edits overlap
+    conflicted = set()
+    diff = _bus_local_get(f"/diff/state?project={room}").get("state", {}) if room else {}
+    machines = list(diff.items())
+    for i in range(len(machines)):
+        for j in range(i + 1, len(machines)):
+            m1, d1 = machines[i]; m2, d2 = machines[j]
+            f1, f2 = d1.get("files", {}), d2.get("files", {})
+            for path in set(f1) & set(f2):
+                if any(_ranges_overlap(r1, r2) for r1 in f1[path] for r2 in f2[path]):
+                    conflicted.update([m1, m2])
+
+    tasks_by_agent = {a["agent"]: a for a in state.get("agents", [])}
+    dec_by_agent = {}
+    for p in pending:
+        try:
+            opts = json.loads(p["options"])
+        except (ValueError, TypeError):
+            opts = ["yes", "no"]
+        dec_by_agent.setdefault(p["agent"], []).append(
+            {"id": p["id"], "question": p["question"], "options": opts})
+    sig_by_agent = {}
+    for s in sig_rows:
+        sig_by_agent.setdefault(s["agent"], []).append(dict(s))
+    # flat narration log (newest first) — YOUR agents' signals + their claims/pushes
+    log = [dict(s) for s in sig_rows if s["agent"] in roster]
+    if room:
+        for m in _bus_local_get(f"/history?room={room}").get("messages", []):
+            if m.get("to") or (m.get("from") not in roster):   # broadcasts by your agents only
+                continue
+            text = (m.get("text") or "").strip()
+            up = text.upper()
+            if up.startswith("CLAIM"):
+                log.append({"agent": m["from"], "kind": "claim", "severity": "low", "text": text[:200], "ts": m.get("ts")})
+            elif up.startswith("PUSHED") or up.startswith("PUSH "):
+                log.append({"agent": m["from"], "kind": "push", "severity": "low", "text": text[:200], "ts": m.get("ts")})
+    log.sort(key=lambda e: -(e.get("ts") or 0))
+    log = log[:30]
+
+    # PRIVATE: only your own roster agents (no auto-discovery of others' agents)
+    names = set(roster)
+    names.discard(None); names.discard("")
+
+    agents = []
+    needs_you = 0
+    for name in sorted(names):
+        pres = presence.get(name)
+        if name in online:
+            live = "stale" if (pres and pres.get("stale")) else "online"
+        else:
+            live = "offline"
+        t = tasks_by_agent.get(name)
+        tasks = (t or {}).get("tasks", [])
+        done = sum(1 for x in tasks if x.get("status") == "done")
+        doing = next((x.get("text") for x in tasks if x.get("status") == "doing"), None)
+        last_task_ts = (t or {}).get("ts")
+        unfinished = any(x.get("status") != "done" for x in tasks)
+        queue = [c for c in state["cards"] if c.get("assigned_to") == name and c["status"] != "done"]
+        sigs = sig_by_agent.get(name, [])[:6]
+        decs = dec_by_agent.get(name, [])
+        ndec = len(decs)
+        mrow = metrics.get(name) or {}
+
+        # health, by priority
+        if name in conflicted:
+            health = "blocked"
+        elif ndec:
+            health = "needs_decision"
+        elif live == "online" and unfinished and last_task_ts and (now - last_task_ts) > STUCK_SECS:
+            health = "stuck"
+        elif live == "offline":
+            health = "offline"
+        elif doing:
+            health = "working"
+        else:
+            health = "idle"
+        if health in ("blocked", "needs_decision", "stuck"):
+            needs_you += 1
+
+        agents.append({
+            "name": name, "role": (roster.get(name) or {}).get("role", ""),
+            "id": (roster.get(name) or {}).get("id"),
+            "planned": name not in online and name in roster,
+            "live": live, "health": health,
+            "current": doing, "tool": mrow.get("last_tool") or None,
+            "tasks_done": done, "tasks_total": len(tasks),
+            "queue": [{"id": c["id"], "title": c["title"], "status": c["status"]} for c in queue],
+            "decisions": decs,
+            "signals": sigs,
+            "metrics": metrics.get(name),
+        })
+
+    unassigned = [c for c in state["cards"] if not c.get("assigned_to") and c["status"] != "done"]
+    working = sum(1 for a in agents if a["health"] == "working")
+    return {
+        "agents": agents,
+        "unassigned": [{"id": c["id"], "title": c["title"], "status": c["status"]} for c in unassigned],
+        "log": log,
+        "needs_you": needs_you,
+        "online": len(online),
+        "working": working,
+    }
 
 
 @app.post("/api/projects/{pid}/ticket/ticket")
