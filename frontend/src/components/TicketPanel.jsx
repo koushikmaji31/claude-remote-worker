@@ -5,7 +5,7 @@
 // Polls every 3s. Shared design tokens + .board-*/.ticket-* rules; no emoji.
 import { useEffect, useState, useCallback } from 'react'
 import { getTicket, createCard, updateCard, deleteCard } from '../lib/ticket.js'
-import { jiraTransition } from '../lib/jira.js'
+import { jiraTransition, jiraComments, jiraAddComment, jiraAssignable, jiraEditIssue } from '../lib/jira.js'
 import JiraPanel from './JiraPanel.jsx'
 import { avatarColor } from '../ui/avatarColor.js'
 
@@ -60,12 +60,93 @@ function JiraPrioIcon({ priority }) {
   )
 }
 
+const JIRA_PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest']
+
+// Expandable detail for a Jira card (Phase 4c): edit assignee/priority + comments.
+function JiraDetail({ pid, card, onChanged }) {
+  const m = card.meta || {}
+  const key = card.external_id
+  const [comments, setComments] = useState(null)
+  const [users, setUsers] = useState(null)
+  const [asgId, setAsgId] = useState('')
+  const [prio, setPrio] = useState(m.priority || '')
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const loadComments = useCallback(() => {
+    jiraComments(pid, key).then((d) => setComments(d.comments)).catch((e) => setErr(e.message))
+  }, [pid, key])
+  useEffect(() => {
+    loadComments()
+    jiraAssignable(pid).then((d) => {
+      setUsers(d.users)
+      const cur = d.users.find((u) => u.name === m.assignee)
+      setAsgId(cur ? cur.account_id : '')
+    }).catch(() => setUsers([]))
+  }, [pid, key, loadComments, m.assignee])
+
+  async function run(fn) {
+    setBusy(true); setErr('')
+    try { await fn(); onChanged?.() } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  const changeAssignee = (e) => {
+    const id = e.target.value, name = id ? e.target.selectedOptions[0].text : null
+    setAsgId(id)
+    run(() => jiraEditIssue(pid, key, { assignee_account_id: id, assignee_name: name }))
+  }
+  const changePriority = (e) => { setPrio(e.target.value); run(() => jiraEditIssue(pid, key, { priority: e.target.value })) }
+  async function addComment() {
+    if (!text.trim()) return
+    await run(() => jiraAddComment(pid, key, text.trim()))
+    setText(''); loadComments()
+  }
+
+  return (
+    <div className="jira-detail" onClick={(e) => e.stopPropagation()}>
+      {err && <div className="alert error">{err}</div>}
+      <div className="jira-edit-row">
+        <label className="jira-edit-field">Assignee
+          {users
+            ? (
+              <select disabled={busy} value={asgId} onChange={changeAssignee}>
+                <option value="">Unassigned</option>
+                {users.map((u) => <option key={u.account_id} value={u.account_id}>{u.name}</option>)}
+              </select>
+            ) : <select disabled><option>Loading…</option></select>}
+        </label>
+        <label className="jira-edit-field">Priority
+          <select disabled={busy} value={prio} onChange={changePriority}>
+            {!JIRA_PRIORITIES.includes(prio) && <option value="">{prio || '—'}</option>}
+            {JIRA_PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="jira-comments">
+        {comments === null && <div className="skeleton" style={{ height: 28 }} />}
+        {comments && comments.length === 0 && <p className="faint" style={{ margin: 0 }}>No comments yet.</p>}
+        {(comments || []).map((c, i) => (
+          <div key={i} className="jira-comment">
+            <span className="jira-comment-author">{c.author}</span>
+            <span className="jira-comment-body">{c.body}</span>
+          </div>
+        ))}
+      </div>
+      <div className="jira-comment-add">
+        <textarea rows={2} placeholder="Add a comment…" value={text} onChange={(e) => setText(e.target.value)} />
+        <button className="btn sm" disabled={busy || !text.trim()} onClick={addComment}>Comment</button>
+      </div>
+    </div>
+  )
+}
+
 // Mirror of a Jira issue (source='jira'), styled like an Atlassian board card: epic
 // tag, summary, then a footer with type icon + key + priority + story points +
 // assignee. Title/desc are edited in Jira; moving runs the real workflow transition.
-function JiraCard({ card, onMove, moving }) {
+function JiraCard({ card, onMove, moving, pid, onChanged }) {
   const m = card.meta || {}
   const prioSlug = JIRA_PRIO[m.priority] || 'none'
+  const [open, setOpen] = useState(false)
   return (
     <div className={`board-card jira-card prio-${prioSlug} ${card.status === 'done' ? 'is-done' : ''}`}>
       {m.epic_key && (
@@ -90,25 +171,28 @@ function JiraCard({ card, onMove, moving }) {
         </span>
       </div>
       <div className="jira-moves-row">
-        <span className="faint jira-move-hint">{moving ? 'Transitioning…' : 'Move:'}</span>
+        <button className="board-move" onClick={() => setOpen((o) => !o)}
+          title="Comments, assignee & priority">{open ? 'Hide' : 'Details'}</button>
         <div className="board-card-moves">
+          {moving && <span className="faint jira-move-hint">Moving…</span>}
           {COLUMNS.filter((t) => t.id !== card.status).map((t) => (
             <button key={t.id} className="board-move" title={`Transition ${card.external_id} to ${t.label} in Jira`}
               disabled={moving} onClick={() => onMove(t.id)}>{MOVE_LABEL[t.id]}</button>
           ))}
         </div>
       </div>
+      {open && <JiraDetail pid={pid} card={card} onChanged={onChanged} />}
     </div>
   )
 }
 
-function Card({ card, onMove, onSave, onDelete, onJiraMove, jiraMoving, colId }) {
+function Card({ card, onMove, onSave, onDelete, onJiraMove, jiraMoving, onJiraChanged, pid, colId }) {
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState(card.title)
   const [body, setBody] = useState(card.body || '')
   const dirty = title !== card.title || body !== (card.body || '')
 
-  if (card.source === 'jira') return <JiraCard card={card} onMove={onJiraMove} moving={jiraMoving} />
+  if (card.source === 'jira') return <JiraCard card={card} onMove={onJiraMove} moving={jiraMoving} pid={pid} onChanged={onJiraChanged} />
 
   return (
     <div className={`board-card ${card.status === 'done' ? 'is-done' : ''}`}>
@@ -237,7 +321,8 @@ export default function TicketPanel({ pid }) {
                         onSave={(patch) => act(() => updateCard(pid, c.id, patch))}
                         onDelete={() => act(() => deleteCard(pid, c.id))}
                         onJiraMove={(to) => jiraMove(c.external_id, to)}
-                        jiraMoving={movingKey === c.external_id} />
+                        jiraMoving={movingKey === c.external_id}
+                        pid={pid} onJiraChanged={poll} />
                     ))}
                   </div>
                 </div>

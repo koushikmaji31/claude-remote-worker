@@ -31,3 +31,12 @@ export const jiraCreateIssue = (pid, data) =>
   api(`/api/projects/${pid}/jira/issues`, { method: 'POST', body: data })
 export const jiraTransition = (pid, key, to) =>
   api(`/api/projects/${pid}/jira/issues/${encodeURIComponent(key)}/transition`, { method: 'POST', body: { to } })
+
+// --- Comments + inline edit (Phase 4c) ---
+export const jiraComments = (pid, key) =>
+  api(`/api/projects/${pid}/jira/issues/${encodeURIComponent(key)}/comments`)
+export const jiraAddComment = (pid, key, body) =>
+  api(`/api/projects/${pid}/jira/issues/${encodeURIComponent(key)}/comments`, { method: 'POST', body: { body } })
+export const jiraAssignable = (pid) => api(`/api/projects/${pid}/jira/assignable`)
+export const jiraEditIssue = (pid, key, patch) =>
+  api(`/api/projects/${pid}/jira/issues/${encodeURIComponent(key)}`, { method: 'PATCH', body: patch })

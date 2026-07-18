@@ -2471,6 +2471,132 @@ def jira_transition_bus(invite_code: str, key: str, body: AgentJiraTransition, r
         conn.close()
 
 
+# ---- Jira comments + inline edit (Phase 4c) ----
+
+def _adf_to_text(node) -> str:
+    """Flatten an Atlassian Document Format node to plain text."""
+    if not isinstance(node, dict):
+        return ""
+    if node.get("type") == "text":
+        return node.get("text", "")
+    text = "".join(_adf_to_text(ch) for ch in (node.get("content") or []))
+    if node.get("type") in ("paragraph", "heading"):
+        return text + "\n"
+    return text
+
+
+@app.get("/api/projects/{pid}/jira/issues/{key}/comments")
+def jira_comments(pid: int, key: str, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        _link, idrow, token = _project_jira_ctx(conn, pid, user["id"])
+        try:
+            st, data, _ = _jira_api(idrow, token, "GET", f"/issue/{key}/comment?maxResults=50&orderBy=created")
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach Jira: {e}")
+        if st != 200:
+            raise HTTPException(400, f"Could not load comments for {key}")
+        comments = [{
+            "author": (c.get("author") or {}).get("displayName", "?"),
+            "body": _adf_to_text(c.get("body")).strip(),
+            "created": c.get("created"),
+        } for c in data.get("comments", [])]
+        return {"key": key, "comments": comments}
+    finally:
+        conn.close()
+
+
+class JiraCommentIn(BaseModel):
+    body: str
+
+
+@app.post("/api/projects/{pid}/jira/issues/{key}/comments")
+def jira_add_comment(pid: int, key: str, body: JiraCommentIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        text = body.body.strip()
+        if not text:
+            raise HTTPException(400, "comment body is required")
+        _link, idrow, token = _project_jira_ctx(conn, pid, user["id"])
+        st, data, _ = _jira_api(idrow, token, "POST", f"/issue/{key}/comment", body={"body": _adf(text)})
+        if st not in (200, 201):
+            raise HTTPException(400, f"Jira rejected the comment ({st})")
+        return {"ok": True, "id": data.get("id")}
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects/{pid}/jira/assignable")
+def jira_assignable(pid: int, user=Depends(current_user)):
+    """Users assignable on the linked Jira project (for the assignee editor)."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        link, idrow, token = _project_jira_ctx(conn, pid, user["id"])
+        try:
+            st, data, _ = _jira_api(idrow, token, "GET",
+                                    f"/user/assignable/search?project={link['project_key']}&maxResults=50")
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach Jira: {e}")
+        if st != 200:
+            raise HTTPException(400, "Could not list assignable users")
+        users = [{"account_id": u.get("accountId"), "name": u.get("displayName", "?")}
+                 for u in (data if isinstance(data, list) else []) if u.get("accountId")]
+        return {"users": users}
+    finally:
+        conn.close()
+
+
+class JiraEditIn(BaseModel):
+    assignee_account_id: Optional[str] = None  # provide (possibly "") to change; "" = unassign
+    assignee_name: Optional[str] = None
+    priority: Optional[str] = None
+
+
+@app.patch("/api/projects/{pid}/jira/issues/{key}")
+def jira_edit_issue(pid: int, key: str, body: JiraEditIn, user=Depends(current_user)):
+    """Edit a Jira issue's assignee and/or priority, then update the mirror card."""
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        provided = body.dict(exclude_unset=True)
+        fields = {}
+        if "assignee_account_id" in provided:
+            fields["assignee"] = {"accountId": body.assignee_account_id} if body.assignee_account_id else None
+        if "priority" in provided and body.priority:
+            fields["priority"] = {"name": body.priority}
+        if not fields:
+            raise HTTPException(400, "nothing to update")
+        _link, idrow, token = _project_jira_ctx(conn, pid, user["id"])
+        st, data, _ = _jira_api(idrow, token, "PUT", f"/issue/{key}", body={"fields": fields})
+        if st not in (200, 204):
+            errs = data.get("errors") if isinstance(data, dict) else None
+            msg = "; ".join(f"{k}: {v}" for k, v in errs.items()) if errs else f"Jira error {st}"
+            raise HTTPException(400, msg)
+        # Reflect on the mirror card.
+        row = conn.execute(
+            "SELECT id, meta FROM ticket_cards WHERE project_id=? AND source='jira' AND external_id=?",
+            (pid, key),
+        ).fetchone()
+        if row:
+            try:
+                m = json.loads(row["meta"]) if row["meta"] else {}
+            except (ValueError, TypeError):
+                m = {}
+            if "assignee_account_id" in provided:
+                m["assignee"] = body.assignee_name or None
+            if "priority" in provided and body.priority:
+                m["priority"] = body.priority
+            conn.execute("UPDATE ticket_cards SET meta=?, updated_at=? WHERE id=?",
+                         (json.dumps(m), time.time(), row["id"]))
+            conn.commit()
+        return {"ok": True, "key": key}
+    finally:
+        conn.close()
+
+
 # ---- Jira OAuth ("Continue with Atlassian"); inert until JIRA_CLIENT_ID/SECRET set ----
 
 def _jira_redirect_uri() -> str:

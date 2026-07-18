@@ -1301,6 +1301,17 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 }
 .jira-chip:hover { color: var(--text); }
 .jira-chip.on { color: var(--text); border-color: var(--brand-500); background: var(--brand-soft); }
+/* Jira card detail: assignee/priority edit + comments (Phase 4c) */
+.jira-detail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: var(--sp-2); }
+.jira-edit-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.jira-edit-field { flex: 1 1 120px; display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; }
+.jira-edit-field select { font-size: 13px; text-transform: none; letter-spacing: 0; padding: 5px 8px; }
+.jira-comments { display: flex; flex-direction: column; gap: 6px; max-height: 180px; overflow-y: auto; }
+.jira-comment { font-size: 12.5px; line-height: 1.4; }
+.jira-comment-author { font-weight: 650; color: var(--text); margin-right: 6px; }
+.jira-comment-body { color: var(--text-muted); white-space: pre-wrap; }
+.jira-comment-add { display: flex; gap: var(--sp-2); align-items: flex-end; }
+.jira-comment-add textarea { flex: 1; resize: vertical; font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--text); }
 /* Create-a-Jira-issue form in the connect panel (Phase 3) */
 .jira-new { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: stretch; margin-top: var(--sp-3); }
 .jira-new select { flex: 0 0 auto; }
