@@ -1336,6 +1336,24 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .bd-ideal { stroke: var(--text-faint); stroke-width: 1.5; stroke-dasharray: 4 3; fill: none; }
 .bd-remaining { stroke: var(--brand-500); stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .bd-endpoint { fill: var(--brand-500); stroke: var(--surface); stroke-width: 2; }
+
+/* Team activity / peer diffs (ticket #15) */
+.peer-activity { display: flex; flex-direction: column; gap: var(--sp-3); }
+.peer { border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--sp-3); background: var(--surface-2); }
+.peer-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: 6px; }
+.peer-who { font-weight: 650; font-size: 13.5px; }
+.peer-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.peer-file-btn {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+  background: transparent; border: none; color: var(--text); cursor: pointer; padding: 4px 6px;
+  border-radius: var(--r-sm); font: inherit; text-align: left;
+}
+.peer-file-btn:hover { background: var(--surface); }
+.peer-path { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.peer-counts { display: inline-flex; gap: 6px; font-size: 11.5px; font-variant-numeric: tabular-nums; flex: none; }
+.peer-add { color: var(--success); }
+.peer-del { color: var(--danger); }
+.peer-diff { margin: 4px 0 6px; }
 /* Create-a-Jira-issue form in the connect panel (Phase 3) */
 .jira-new { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: stretch; margin-top: var(--sp-3); }
 .jira-new select { flex: 0 0 auto; }
