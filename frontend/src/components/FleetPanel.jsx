@@ -1,12 +1,12 @@
-// Fleet — mission control. Two panes: a scannable agent roster (left) and a live
-// narration log (right), with a fleet summary on top. Each roster card shows
-// identity (initials avatar) · health · current task · STATE/TOOL/QUEUE · metrics,
-// plus inline actions (answer a decision, ping a blocked agent) — the control the
-// passive tools lack. Data is one /fleet poll driving both panes.
+// Fleet — mission control. Left: a scannable roster of agent cards (click a card
+// to open its detail view). Right: the live narration log. Each card is a compact
+// status glance; the detail modal holds the heavy stuff — the agent's actual file
+// edits (with diffs), its interactions, metrics, launch command and management.
+// Data: one /fleet poll drives the roster; the modal lazy-loads diffs + interactions.
 import { useEffect, useState, useCallback } from 'react'
 import { api } from '../api.js'
 import { avatarColor } from '../ui/avatarColor.js'
-import PeerActivity from './PeerActivity.jsx'
+import { getPeerDiff } from '../lib/peers.js'
 
 function initials(n) {
   return (n || '?').split(/[\s_-]+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase()
@@ -24,6 +24,12 @@ function fmt(n) {
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
   if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k'
   return String(n)
+}
+function diffClass(line) {
+  if (line.startsWith('@@')) return 'hunk'
+  if (line.startsWith('+') && !line.startsWith('+++')) return 'add'
+  if (line.startsWith('-') && !line.startsWith('---')) return 'del'
+  return ''
 }
 const HEALTH = {
   blocked: { cls: 'crit', label: 'Blocked' },
@@ -49,11 +55,14 @@ export default function FleetPanel({ pid }) {
   const [creating, setCreating] = useState(false)
   const [nName, setNName] = useState('')
   const [nRole, setNRole] = useState('')
-  const [editing, setEditing] = useState(null)
+  const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState('')
-  const [copied, setCopied] = useState(null)
-  const [rightView, setRightView] = useState('narration') // narration | interactions
+  const [copied, setCopied] = useState(false)
+  const [selected, setSelected] = useState(null)  // agent name -> detail modal open
   const [inter, setInter] = useState(null)
+  const [openFile, setOpenFile] = useState(null)  // path whose diff is expanded
+  const [fileDiff, setFileDiff] = useState(null)
+  const [fileErr, setFileErr] = useState('')
 
   const load = useCallback(() => {
     api(`/api/projects/${pid}/fleet`).then((d) => { setData(d); setError('') }).catch((e) => setError(e.message))
@@ -64,13 +73,16 @@ export default function FleetPanel({ pid }) {
     return () => clearInterval(iv)
   }, [load, pid])
 
-  // Interactions poll only while that view is open (keeps the default poll lean).
+  // Interactions poll only while a detail modal is open.
   useEffect(() => {
-    if (rightView !== 'interactions') return
+    if (!selected) return
     const tick = () => api(`/api/projects/${pid}/interactions`).then(setInter).catch(() => {})
     tick(); const iv = setInterval(tick, 5000)
     return () => clearInterval(iv)
-  }, [rightView, pid])
+  }, [selected, pid])
+
+  // Reset the per-file diff + rename state whenever the selected agent changes.
+  useEffect(() => { setOpenFile(null); setFileDiff(null); setFileErr(''); setEditing(false) }, [selected])
 
   const createAgent = async () => {
     if (!nName.trim()) return
@@ -80,9 +92,9 @@ export default function FleetPanel({ pid }) {
   const rename = async (a) => {
     if (editName.trim() && editName.trim() !== a.name)
       await api(`/api/projects/${pid}/agents/${a.id}`, { method: 'POST', body: { name: editName.trim(), role: a.role || '' } }).catch((e) => setError(e.message))
-    setEditing(null); load()
+    setEditing(false); setSelected(editName.trim() || a.name); load()
   }
-  const removeAgent = async (a) => { if (window.confirm(`Delete "${a.name}"?`)) { await api(`/api/projects/${pid}/agents/${a.id}`, { method: 'DELETE' }).catch(() => {}); load() } }
+  const removeAgent = async (a) => { if (window.confirm(`Delete "${a.name}"?`)) { await api(`/api/projects/${pid}/agents/${a.id}`, { method: 'DELETE' }).catch(() => {}); setSelected(null); load() } }
   const addToRoster = async (name) => { await api(`/api/projects/${pid}/agents`, { method: 'POST', body: { name, role: '' } }).catch((e) => setError(e.message)); load() }
   const answer = async (did, ans) => { await api(`/api/projects/${pid}/decisions/${did}/answer`, { method: 'POST', body: { answer: ans } }).catch(() => {}); load() }
   const ping = async (a) => {
@@ -91,10 +103,20 @@ export default function FleetPanel({ pid }) {
       : `◴ ${a.name}: looks stuck — need help? (${a.current || 'no recent progress'})`
     await api(`/api/projects/${pid}/messages`, { method: 'POST', body: { text: t } }).catch(() => {})
   }
-  const copy = (id, text) => navigator.clipboard.writeText(text).then(() => { setCopied(id); setTimeout(() => setCopied(null), 1400) })
+  const copyCmd = (text) => navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1400) })
+
+  const viewFile = async (machine, path) => {
+    if (openFile === path) { setOpenFile(null); setFileDiff(null); return }
+    setOpenFile(path); setFileDiff(null); setFileErr('')
+    if (!machine) { setFileErr('No live diff source for this agent.'); return }
+    try { setFileDiff((await getPeerDiff(pid, machine, path)).diff || '') }
+    catch (e) { setFileErr(e.message) }
+  }
 
   if (error && !data) return <div className="alert error">Could not load fleet: {error}</div>
   if (!data) return <div className="app-fallback muted">Loading fleet…</div>
+
+  const sel = selected ? (data.agents || []).find((a) => a.name === selected) : null
 
   return (
     <div className="fm">
@@ -117,23 +139,21 @@ export default function FleetPanel({ pid }) {
       )}
 
       <div className="fm-panes">
-        {/* LEFT: roster */}
+        {/* LEFT: roster of clickable status cards */}
         <div className="fm-roster">
           {data.agents.length === 0 && <p className="muted">No agents yet. Create one, then bind a terminal with its launch command.</p>}
           {data.agents.map((a) => {
             const h = HEALTH[a.health] || HEALTH.idle
             const m = a.metrics
+            const nfiles = (a.files || []).length
             return (
-              <section key={a.name} className={`fm-card ${h.cls}`}>
+              <section key={a.name} className={`fm-card clickable ${h.cls}`} role="button" tabIndex={0}
+                       onClick={() => setSelected(a.name)}
+                       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setSelected(a.name)}>
                 <div className="fm-card-top">
                   <Avatar name={a.name} />
                   <div className="fm-id">
-                    {editing === a.name ? (
-                      <input className="fm-rename" autoFocus value={editName} onChange={(e) => setEditName(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && rename(a)} onBlur={() => rename(a)} />
-                    ) : (
-                      <div className="fm-name" onClick={() => a.id && (setEditing(a.name), setEditName(a.name))}>{a.name}</div>
-                    )}
+                    <div className="fm-name">{a.name}</div>
                     <div className="fm-task">{a.current || (a.live === 'offline' ? 'not running' : 'idle — no active task')}</div>
                     {a.role && <div className="fm-role">{a.role}</div>}
                   </div>
@@ -146,30 +166,16 @@ export default function FleetPanel({ pid }) {
                   <div className="fm-row"><span className="fm-k">QUEUE</span><span className="fm-v">{a.queue.length ? a.queue.map((c) => `#${c.id}`).join(' ') : '—'}</span></div>
                 </div>
 
-                {a.files && a.files.length > 0 && (
-                  <div className="fm-files">
-                    <div className="fm-files-head">Changing {a.files.length} file{a.files.length === 1 ? '' : 's'}</div>
-                    {a.files.map((f) => (
-                      <div key={f.path} className="fm-file">
-                        <span className="mono fm-file-path" title={f.path}>{f.path}</span>
-                        <span className="fm-file-counts">
-                          {f.added ? <span className="peer-add">+{f.added}</span> : null}
-                          {f.removed ? <span className="peer-del">−{f.removed}</span> : null}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
                 <div className="fm-foot">
                   <span>{a.tasks_done}/{a.tasks_total} tasks</span>
                   {m && fmt(m.tokens_in) && <span>· {fmt(m.tokens_in)}↓ {fmt(m.tokens_out)}↑</span>}
                   {m && m.tool_errors > 0 && <span className="crit">· {m.tool_errors} errs</span>}
+                  {nfiles > 0 && <span className="fm-files-hint">· {nfiles} file{nfiles === 1 ? '' : 's'} changed</span>}
                 </div>
 
-                {/* inline actions */}
+                {/* time-sensitive actions stay on the card (stop click-through) */}
                 {a.decisions && a.decisions.length > 0 && (
-                  <div className="fm-decide">
+                  <div className="fm-decide" onClick={(e) => e.stopPropagation()}>
                     <div className="fm-q">{a.decisions[0].question}</div>
                     <div className="fm-opts">
                       {a.decisions[0].options.map((o) => (
@@ -179,83 +185,141 @@ export default function FleetPanel({ pid }) {
                   </div>
                 )}
                 {(a.health === 'blocked' || a.health === 'stuck') && (
-                  <div className="fm-actions"><button className="btn ghost sm" onClick={() => ping(a)}>Ping in chat</button></div>
+                  <div className="fm-actions" onClick={(e) => e.stopPropagation()}><button className="btn ghost sm" onClick={() => ping(a)}>Ping in chat</button></div>
                 )}
-
-                {(a.planned || a.live === 'offline') && bus && (
-                  <div className="fm-bind">
-                    <code title={`${bus.command} && CLAUDE_BUS_NAME=${a.name} claude`}>{`${bus.command} && CLAUDE_BUS_NAME=${a.name} claude`}</code>
-                    <button className="btn ghost sm" onClick={() => copy(a.name, `${bus.command} && CLAUDE_BUS_NAME=${a.name} claude`)}>{copied === a.name ? 'Copied' : 'Copy launch'}</button>
-                  </div>
-                )}
-
-                <div className="fm-manage">
-                  {a.id ? <button className="fm-x" onClick={() => removeAgent(a)}>Delete</button>
-                    : <button className="fm-x" onClick={() => addToRoster(a.name)}>+ Add to roster</button>}
-                </div>
               </section>
             )
           })}
-          {/* Unassigned-tasks list removed — the backlog lives in Jira; no need to duplicate it here. */}
         </div>
 
-        {/* RIGHT: toggle between narration log and agent-to-agent interactions */}
+        {/* RIGHT: narration log only */}
         <div className="fm-log">
-          <div className="fm-log-tabs">
-            <button className={`fm-log-tab ${rightView === 'narration' ? 'on' : ''}`} onClick={() => setRightView('narration')}>Narration log</button>
-            <button className={`fm-log-tab ${rightView === 'interactions' ? 'on' : ''}`} onClick={() => setRightView('interactions')}>Interactions</button>
-          </div>
+          <div className="fm-log-head">Narration log</div>
+          {(!data.log || data.log.length === 0) && <p className="muted" style={{ padding: '0 4px' }}>No updates yet. Agent signals appear here live.</p>}
+          {(data.log || []).map((s, i) => (
+            <div key={i} className="fm-log-row">
+              <Avatar name={s.agent} size={26} />
+              <div className="fm-log-body">
+                <div className="fm-log-meta"><span className="fm-log-name">{s.agent}</span><span className="ts">{ago(s.ts)} ago</span></div>
+                <div className="fm-log-text"><span className={`fm-log-kind ${s.severity}`}>{s.kind}</span> {s.text}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
-          {rightView === 'narration' && (
-            <>
-              {(!data.log || data.log.length === 0) && <p className="muted" style={{ padding: '0 4px' }}>No updates yet. Agent signals appear here live.</p>}
-              {(data.log || []).map((s, i) => (
-                <div key={i} className="fm-log-row">
-                  <Avatar name={s.agent} size={26} />
-                  <div className="fm-log-body">
-                    <div className="fm-log-meta"><span className="fm-log-name">{s.agent}</span><span className="ts">{ago(s.ts)} ago</span></div>
-                    <div className="fm-log-text"><span className={`fm-log-kind ${s.severity}`}>{s.kind}</span> {s.text}</div>
+      {/* DETAIL MODAL — the big view for one agent */}
+      {sel && (() => {
+        const h = HEALTH[sel.health] || HEALTH.idle
+        const m = sel.metrics
+        const cmd = bus ? `${bus.command} && CLAUDE_BUS_NAME=${sel.name} claude` : ''
+        const myMsgs = (inter?.messages || []).filter((x) => x.from === sel.name || x.to === sel.name)
+        return (
+          <div className="fm-modal-backdrop" onClick={() => setSelected(null)}>
+            <div className="fm-modal" onClick={(e) => e.stopPropagation()}>
+              <header className="fm-modal-head">
+                <Avatar name={sel.name} size={44} />
+                <div className="fm-modal-id">
+                  {editing ? (
+                    <input className="fm-rename" autoFocus value={editName} onChange={(e) => setEditName(e.target.value)}
+                           onKeyDown={(e) => e.key === 'Enter' && rename(sel)} onBlur={() => rename(sel)} />
+                  ) : (
+                    <div className="fm-modal-name">
+                      {sel.name}
+                      {sel.id ? <button className="fm-edit-x" title="Rename" onClick={() => { setEditing(true); setEditName(sel.name) }}>edit</button> : null}
+                    </div>
+                  )}
+                  <div className="fm-modal-sub">
+                    <span className={`fm-status ${h.cls}`}>{h.label}</span>
+                    {sel.role && <span className="fm-role">{sel.role}</span>}
+                    <span className="faint">{sel.live}</span>
                   </div>
                 </div>
-              ))}
-            </>
-          )}
+                <button className="fm-modal-close" onClick={() => setSelected(null)} aria-label="Close">×</button>
+              </header>
 
-          {rightView === 'interactions' && (
-            <>
-              {/* Team activity (peer diffs) — who's touching which files right now,
-                  with click-to-view live diffs. Moved here from Branches. */}
-              <PeerActivity pid={pid} />
-              {!inter && <p className="muted" style={{ padding: '0 4px' }}>Loading…</p>}
-              {inter && inter.messages.length === 0 && <p className="muted" style={{ padding: '0 4px' }}>No agent-to-agent messages yet. When agents DM each other on the bus, their exchange shows here.</p>}
-              {inter && inter.pairs.length > 0 && (
-                <div className="fm-pairs">
-                  {inter.pairs.map((p, i) => (
-                    <div key={i} className="fm-pair" title={p.last_text}>
-                      <Avatar name={p.a} size={20} /><span className="fm-pair-x">⇄</span><Avatar name={p.b} size={20} />
-                      <span className="fm-pair-c">{p.count}</span>
+              <div className="fm-modal-body">
+                <div className="fm-rows">
+                  <div className="fm-row"><span className="fm-k">STATE</span><span className={`fm-v ${h.cls}`}>{h.label}</span></div>
+                  <div className="fm-row"><span className="fm-k">TOOL</span><span className="fm-v">{sel.tool || '—'}</span></div>
+                  <div className="fm-row"><span className="fm-k">QUEUE</span><span className="fm-v">{sel.queue.length ? sel.queue.map((c) => `#${c.id} ${c.title}`).join(', ') : '—'}</span></div>
+                  <div className="fm-row"><span className="fm-k">TASKS</span><span className="fm-v">{sel.tasks_done}/{sel.tasks_total} done</span></div>
+                  {m && fmt(m.tokens_in) && <div className="fm-row"><span className="fm-k">TOKENS</span><span className="fm-v">{fmt(m.tokens_in)}↓ {fmt(m.tokens_out)}↑ · {m.tool_calls || 0} calls{m.tool_errors ? ` · ${m.tool_errors} errs` : ''}</span></div>}
+                </div>
+
+                {sel.current && <p className="fm-modal-current">{sel.current}</p>}
+
+                {/* Edits — the agent's live uncommitted changes, click a file for its diff */}
+                <div className="fm-modal-section">
+                  <div className="fm-section-title">Edits{sel.files.length ? ` · ${sel.files.length} file${sel.files.length === 1 ? '' : 's'}` : ''}</div>
+                  {sel.files.length === 0 && <p className="muted" style={{ margin: 0 }}>No uncommitted changes right now.</p>}
+                  {sel.files.map((f) => (
+                    <div key={f.path} className="fm-editfile">
+                      <button className="fm-editfile-btn" onClick={() => viewFile(sel.machine, f.path)}>
+                        <span className="mono fm-file-path" title={f.path}>{f.path}</span>
+                        <span className="fm-file-counts">
+                          {f.added ? <span className="peer-add">+{f.added}</span> : null}
+                          {f.removed ? <span className="peer-del">−{f.removed}</span> : null}
+                        </span>
+                      </button>
+                      {openFile === f.path && (
+                        <div className="fm-editdiff">
+                          {fileErr && <div className="alert error">{fileErr}</div>}
+                          {fileDiff === null && !fileErr && <div className="skeleton" style={{ height: 40 }} />}
+                          {fileDiff !== null && fileDiff !== '' && (
+                            <pre className="git-diff" aria-label={`diff of ${f.path}`}>
+                              {fileDiff.split('\n').map((l, i) => <span key={i} className={diffClass(l)}>{l + '\n'}</span>)}
+                            </pre>
+                          )}
+                          {fileDiff === '' && <p className="faint" style={{ margin: 0 }}>(no textual diff)</p>}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
-              )}
-              {inter && inter.messages.slice().reverse().map((m, i) => (
-                <div key={i} className="fm-msg">
-                  <Avatar name={m.from} size={22} />
-                  <div className="fm-msg-body">
-                    <div className="fm-msg-meta">
-                      <span className="fm-log-name">{m.from}</span>
-                      <span className="fm-arrow">→</span>
-                      <span className="fm-log-name">{m.to}</span>
-                      <span className="ts">{ago(m.ts)} ago</span>
+
+                {/* Interactions — bus messages to/from this agent */}
+                <div className="fm-modal-section">
+                  <div className="fm-section-title">Interactions</div>
+                  {!inter && <p className="muted" style={{ margin: 0 }}>Loading…</p>}
+                  {inter && myMsgs.length === 0 && <p className="muted" style={{ margin: 0 }}>No agent-to-agent messages involving {sel.name} yet.</p>}
+                  {myMsgs.map((msg, i) => (
+                    <div key={i} className="fm-msg">
+                      <Avatar name={msg.from} size={22} />
+                      <div className="fm-msg-body">
+                        <div className="fm-msg-meta">
+                          <span className="fm-log-name">{msg.from}</span>
+                          <span className="fm-arrow">→</span>
+                          <span className="fm-log-name">{msg.to}</span>
+                          <span className="ts">{ago(msg.ts)} ago</span>
+                        </div>
+                        <div className="fm-log-text">{msg.text}</div>
+                      </div>
                     </div>
-                    <div className="fm-log-text">{m.text}</div>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </>
-          )}
-        </div>
-      </div>
+
+                {/* Launch command for planned/offline agents */}
+                {(sel.planned || sel.live === 'offline') && cmd && (
+                  <div className="fm-modal-section">
+                    <div className="fm-section-title">Launch</div>
+                    <div className="fm-bind">
+                      <code title={cmd}>{cmd}</code>
+                      <button className="btn ghost sm" onClick={() => copyCmd(cmd)}>{copied ? 'Copied' : 'Copy launch'}</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <footer className="fm-modal-foot">
+                {sel.id
+                  ? <button className="btn danger sm" onClick={() => removeAgent(sel)}>Delete agent</button>
+                  : <button className="btn sm" onClick={() => addToRoster(sel.name)}>+ Add to roster</button>}
+              </footer>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

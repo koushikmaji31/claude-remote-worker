@@ -2364,12 +2364,15 @@ def project_fleet(pid: int, user=Depends(current_user)):
 
     # Files each agent is currently touching (from the peer-diff bus): agent ->
     # [{path, added, removed}], so a card can show live, uncommitted changes.
+    # machine_by_agent lets the detail view fetch that agent's actual diffs.
     files_by_agent = {}
+    machine_by_agent = {}
     for machine, d in diff.items():
         ag = d.get("agent") or machine
         perfile = d.get("perfile") or {}
         if not perfile:
             continue
+        machine_by_agent[ag] = machine
         flist = files_by_agent.setdefault(ag, [])
         for path, info in sorted(perfile.items()):
             flist.append({"path": path,
@@ -2453,6 +2456,7 @@ def project_fleet(pid: int, user=Depends(current_user)):
             "live": live, "health": health,
             "current": doing, "tool": mrow.get("last_tool") or None,
             "files": files_by_agent.get(name, []),
+            "machine": machine_by_agent.get(name),
             "tasks_done": done, "tasks_total": len(tasks),
             "queue": [{"id": c["id"], "title": c["title"], "status": c["status"]} for c in queue],
             "decisions": decs,
