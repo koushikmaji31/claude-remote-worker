@@ -6,7 +6,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
   githubStatus, githubConnect, githubDisconnect, ghOAuthStart, glOAuthStart,
-  getRepoLink, linkRepo, unlinkRepo, listRepos,
+  linkRepo, listRepos,
   ghBranches, ghPulls, ghIssues, ghPullDetail, ghConflicts,
 } from '../lib/github'
 import BranchGraph from './BranchGraph.jsx'
@@ -294,9 +294,8 @@ function subsequenceMatch(q, text) {
   return i === needle.length
 }
 
-export default function GitHubPanel({ pid, canManage }) {
+export default function GitHubPanel({ pid, canManage, repo, reloadRepo }) {
   const [status, setStatus] = useState(null) // null = loading
-  const [repo, setRepo] = useState(null)
   const [token, setToken] = useState('')
   const [fullName, setFullName] = useState('')
   const [busy, setBusy] = useState(false)
@@ -319,13 +318,11 @@ export default function GitHubPanel({ pid, canManage }) {
   const refresh = useCallback(async () => {
     setError('')
     try {
-      const [s, r] = await Promise.all([githubStatus(), getRepoLink(pid)])
-      setStatus(s)
-      setRepo(r)
+      setStatus(await githubStatus())
     } catch (err) {
       setError(err.message)
     }
-  }, [pid])
+  }, [])
 
   useEffect(() => {
     const r = consumeOAuthResult()
@@ -345,7 +342,7 @@ export default function GitHubPanel({ pid, canManage }) {
 
   async function run(fn) {
     setBusy(true); setError('')
-    try { await fn(); await refresh() }
+    try { await fn(); await refresh(); await reloadRepo?.() }
     catch (err) { setError(err.message) }
     finally { setBusy(false) }
   }
@@ -361,7 +358,6 @@ export default function GitHubPanel({ pid, canManage }) {
     setFullName('')
     setRepoOpen(false)
   })
-  const unlink = () => run(() => unlinkRepo(pid))
 
   // Lazily load the account's repos the first time the combobox opens.
   const ensureRepos = useCallback(async () => {
@@ -515,16 +511,15 @@ export default function GitHubPanel({ pid, canManage }) {
       </section>
       )}
 
-      {/* --- Repo link --- */}
+      {/* --- Repo link (only when nothing is linked; the linked repo shows in the
+           page header beside the "Branches" title) --- */}
+      {repo && !repo.linked && (
       <section className="panel">
         <header className="panel-head">
-          <h2>Linked repository</h2>
-          {repo?.linked && <span className="tag mono">{repo.full_name}</span>}
+          <h2>Link a repository</h2>
         </header>
         <div className="panel-body">
-          {repo === null && <div className="skeleton" style={{ height: 44 }} />}
-
-          {repo && !repo.linked && (
+          {(
             <>
               <p className="muted" style={{ marginTop: 0 }}>
                 {canManage
@@ -582,22 +577,9 @@ export default function GitHubPanel({ pid, canManage }) {
               )}
             </>
           )}
-
-          {repo?.linked && (
-            <div className="gh-connected">
-              <div>
-                <a className="gh-login" href={`https://github.com/${repo.full_name}`} target="_blank" rel="noreferrer">
-                  {repo.full_name}
-                </a>
-                <div className="faint">default branch: {repo.default_branch || 'unknown'}</div>
-              </div>
-              {canManage && (
-                <button className="btn ghost sm" onClick={unlink} disabled={busy}>Unlink</button>
-              )}
-            </div>
-          )}
         </div>
       </section>
+      )}
 
       {/* --- Live repo data (Phase 2) --- */}
       {repo?.linked && <GitHubRepoData pid={pid} provider={repo.provider || 'github'} />}

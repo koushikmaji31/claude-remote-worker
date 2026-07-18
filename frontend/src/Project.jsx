@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { api, getToken, getUser } from './api.js'
+import { getRepoLink, unlinkRepo } from './lib/github'
 import ThemeToggle from './ui/ThemeToggle.jsx'
 import { avatarColor } from './ui/avatarColor.js'
 import ChatPanel from './components/ChatPanel.jsx'
@@ -120,6 +121,18 @@ export default function Project() {
 
   useEffect(() => { loadProject() }, [loadProject])
 
+  // Linked repo is owned here so it can render in the header (beside the title)
+  // while GitHubPanel handles the linking/unlinking flow.
+  const [repo, setRepo] = useState(null)
+  const loadRepo = useCallback(() => {
+    getRepoLink(pid).then(setRepo).catch(() => setRepo(null))
+  }, [pid])
+  useEffect(() => { loadRepo() }, [loadRepo])
+  const unlinkBranchRepo = async () => {
+    if (!window.confirm('Unlink this repository?')) return
+    try { await unlinkRepo(pid); loadRepo() } catch (err) { setError(err.message) }
+  }
+
   const isAdmin = project && me && project.admin_id === me.user_id
 
   async function removeMember(uid) {
@@ -209,9 +222,22 @@ export default function Project() {
 
       <main className="main">
         <header className="main-head">
-          <div>
-            <div className="crumb">{project.name}</div>
-            <h1>{activeLabel}</h1>
+          <div className="main-head-left">
+            <div>
+              <div className="crumb">{project.name}</div>
+              <h1>{activeLabel}</h1>
+            </div>
+            {view === 'branches' && repo?.linked && (
+              <div className="head-repo" title={`default branch: ${repo.default_branch || 'main'}`}>
+                <a className="head-repo-name mono"
+                   href={`https://${repo.provider === 'gitlab' ? 'gitlab.com' : 'github.com'}/${repo.full_name}`}
+                   target="_blank" rel="noreferrer">{repo.full_name}</a>
+                <span className="head-repo-branch">{repo.default_branch || 'main'}</span>
+                {!!project.can_manage && (
+                  <button className="head-repo-unlink" onClick={unlinkBranchRepo} title="Unlink repository">Unlink</button>
+                )}
+              </div>
+            )}
           </div>
           <div className="main-actions">
             {isAdmin && (
@@ -250,7 +276,7 @@ export default function Project() {
 
           {view === 'discussion' && <ChatPanel pid={pid} me={me} />}
 
-          {view === 'branches' && <GitHubPanel pid={pid} canManage={!!project.can_manage} />}
+          {view === 'branches' && <GitHubPanel pid={pid} canManage={!!project.can_manage} repo={repo} reloadRepo={loadRepo} />}
 
           {view === 'ticket' && <TicketPanel pid={pid} me={me} />}
 

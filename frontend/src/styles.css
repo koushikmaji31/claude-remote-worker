@@ -579,6 +579,22 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 .crumb { font-size: 12px; color: var(--text-faint); font-weight: 500; }
 .main-head h1 { font-size: 22px; font-weight: 680; letter-spacing: -0.02em; margin-top: 2px; }
 .main-actions { display: flex; gap: var(--sp-2); }
+
+/* Linked-repo chip in the header, beside the "Branches" title */
+.main-head-left { display: flex; align-items: flex-end; gap: var(--sp-4); min-width: 0; }
+.head-repo {
+  display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-pill);
+  font-size: 12.5px; margin-bottom: 3px; min-width: 0;
+}
+.head-repo-name { color: var(--text); text-decoration: none; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.head-repo-name:hover { text-decoration: underline; }
+.head-repo-branch {
+  flex-shrink: 0; color: var(--text-muted); font-family: var(--mono, monospace); font-size: 11px;
+  padding: 1px 7px; background: var(--surface); border-radius: var(--r-pill);
+}
+.head-repo-unlink { flex-shrink: 0; background: none; border: none; color: var(--text-faint); font-size: 11px; cursor: pointer; padding: 2px 4px; }
+.head-repo-unlink:hover { color: var(--danger); }
 .main-body { padding: var(--sp-6); width: 100%; }
 
 /* ---------- Panels — flat sections (no card box), like Discussion ---------- */
