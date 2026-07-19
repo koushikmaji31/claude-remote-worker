@@ -133,6 +133,16 @@ export default function Project() {
     try { await unlinkRepo(pid); loadRepo() } catch (err) { setError(err.message) }
   }
 
+  // Collapsible sidebar — persisted so it stays the way the user left it.
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem('side-collapsed') === '1' } catch { return false }
+  })
+  const toggleSidebar = () => setCollapsed((c) => {
+    const next = !c
+    try { localStorage.setItem('side-collapsed', next ? '1' : '0') } catch { /* ignore */ }
+    return next
+  })
+
   const isAdmin = project && me && project.admin_id === me.user_id
 
   async function removeMember(uid) {
@@ -181,13 +191,20 @@ export default function Project() {
 
   return (
     <div className="app">
-      <aside className="side">
+      <aside className={`side ${collapsed ? 'collapsed' : ''}`}>
         <div className="side-top">
           <span className="side-avatar" aria-hidden style={{ background: avatarColor(project.name) }}>{initials(project.name)}</span>
           <div className="side-id">
             <div className="side-name" title={project.name}>{project.name}</div>
             <div className="side-sub">{memberCount} member{memberCount === 1 ? '' : 's'}</div>
           </div>
+          <button className="side-collapse" onClick={toggleSidebar} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                  title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d={collapsed ? 'M9 6l6 6-6 6' : 'M15 6l-6 6 6 6'} />
+            </svg>
+          </button>
         </div>
 
         <nav className="side-nav">
@@ -197,6 +214,7 @@ export default function Project() {
               key={n.id}
               className={`nav-item ${view === n.id ? 'on' : ''}`}
               onClick={() => setView(n.id)}
+              title={n.label}
             >
               <NavIcon id={n.id} />
               <span>{n.label}</span>
@@ -206,7 +224,7 @@ export default function Project() {
         </nav>
 
         <div className="side-foot">
-          <Link className="nav-item" to="/">
+          <Link className="nav-item" to="/" title="All projects">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M15 18l-6-6 6-6" />
