@@ -1523,47 +1523,44 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .crow.me .crow-meta { flex-direction: row-reverse; }
 .crow.me .bubble { background: var(--brand-soft); border-radius: 12px 4px 12px 12px; }
 
-/* Composer — one rounded input bar (Google-Chat / shadcn feel): attach on the
-   left, a borderless growing textarea, and a round send button, all inside a
-   single pill with a soft shadow and a focus ring. */
+/* Composer — understated Google-Chat bar: a soft filled pill (no loud border or
+   ring), a borderless growing textarea, subtle round attach, and a quiet ghost
+   send arrow that only tints when there's something to send. */
 .chat-composer {
   display: flex; align-items: flex-end; gap: 4px;
   margin-top: var(--sp-3);
-  padding: 5px 6px 5px 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 24px;
-  box-shadow: var(--shadow-sm);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  padding: 6px 8px;
+  background: var(--surface-2);
+  border: 1px solid transparent;
+  border-radius: 26px;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
-.chat-composer:focus-within {
-  border-color: var(--brand-500);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-500) 20%, transparent);
-}
+.chat-composer:focus-within { background: var(--surface); border-color: var(--border); }
 .chat-attach {
   flex-shrink: 0; align-self: flex-end; display: inline-flex; align-items: center; justify-content: center;
   width: 34px; height: 34px; border-radius: 50%;
-  background: transparent; color: var(--text-muted); border: none; cursor: pointer;
+  background: transparent; color: var(--text-faint); border: none; cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
-.chat-attach:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.chat-attach:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 .chat-attach:disabled { opacity: 0.4; cursor: default; }
 .chat-composer textarea {
   flex: 1; min-height: 34px; max-height: 160px; resize: none; align-self: center;
   border: none; background: transparent; box-shadow: none;
-  padding: 7px 6px; font-size: 14px; line-height: 1.45; color: var(--text);
+  padding: 7px 4px; font-size: 14px; line-height: 1.45; color: var(--text);
 }
 .chat-composer textarea:focus { outline: none; box-shadow: none; }
 .chat-composer textarea::placeholder { color: var(--text-faint); }
 .chat-send {
   flex-shrink: 0; align-self: flex-end; display: inline-flex; align-items: center; justify-content: center;
-  width: 36px; height: 36px; min-width: 36px; padding: 0; border-radius: 50%;
-  background: var(--brand-600); color: var(--text-on-brand); border: none; cursor: pointer;
-  transition: background 0.12s, transform 0.08s, opacity 0.12s;
+  width: 34px; height: 34px; min-width: 34px; padding: 0; border-radius: 50%;
+  background: transparent; color: var(--text-faint); border: none; cursor: pointer;
+  transition: background 0.12s, color 0.12s, transform 0.08s;
 }
-.chat-send:hover:not(:disabled) { background: var(--brand-700); }
-.chat-send:active:not(:disabled) { transform: scale(0.93); }
-.chat-send:disabled { background: var(--surface-2); color: var(--text-faint); cursor: default; box-shadow: none; }
+.chat-send:not(:disabled) { color: var(--brand-600); }
+.chat-send:hover:not(:disabled) { background: color-mix(in srgb, var(--brand-600) 12%, transparent); }
+.chat-send:active:not(:disabled) { transform: scale(0.92); }
+.chat-send:disabled { color: var(--text-faint); background: transparent; cursor: default; }
 
 /* Branch-graph: squashed commit groups (expandable) */
 .gh-graph-group {
