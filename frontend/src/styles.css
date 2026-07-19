@@ -1484,8 +1484,15 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .chat-head-title { font-size: 14px; font-weight: 650; }
 .chat-head-sub { font-size: 12px; max-width: 60ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Flat, full-height chat thread. Log scrolls; composer pinned at the bottom. */
+/* Flat, full-height chat thread. Log scrolls; composer pinned at the bottom.
+   Content is capped to a comfortable reading width and centered (like Google
+   Chat) instead of stretching edge-to-edge across a wide pane. */
 .chat { display: flex; flex-direction: column; min-height: 0; }
+.chat > .chat-head,
+.chat > .chat-log,
+.chat > .chat-composer,
+.chat > .composer-preview,
+.chat > .alert { width: 100%; max-width: 820px; margin-left: auto; margin-right: auto; }
 @media (max-width: 760px) {
   .chat-wrap { grid-template-columns: 1fr; height: auto; }
   .conv-list { max-height: 40vh; }
