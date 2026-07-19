@@ -136,17 +136,6 @@ function AuthForm({ onAuthed }) {
         >Register</button>
       </div>
 
-      {googleClientId && (
-        <>
-          <button type="button" className="gauth-btn" onClick={signInWithGoogle}
-                  disabled={busy || !gisReady}>
-            <GoogleMark />
-            {mode === 'register' ? 'Sign up with Google' : 'Continue with Google'}
-          </button>
-          <div className="auth-divider"><span>or</span></div>
-        </>
-      )}
-
       <form onSubmit={submit} className="stack-3">
         {mode === 'register' && (
           <label className="field">
@@ -170,6 +159,17 @@ function AuthForm({ onAuthed }) {
           {busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}
         </button>
       </form>
+
+      {googleClientId && (
+        <>
+          <div className="auth-divider"><span>or</span></div>
+          <button type="button" className="gauth-btn" onClick={signInWithGoogle}
+                  disabled={busy || !gisReady}>
+            <GoogleMark />
+            {mode === 'register' ? 'Sign up with Google' : 'Continue with Google'}
+          </button>
+        </>
+      )}
     </div>
   )
 }
