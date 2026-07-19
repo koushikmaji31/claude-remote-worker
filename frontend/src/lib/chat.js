@@ -14,3 +14,13 @@ export const getConvMessages = (pid, cid, sinceId = 0) =>
 
 export const postConvMessage = (pid, cid, body) =>
   api(`/api/projects/${pid}/conversations/${cid}/messages`, { method: 'POST', body })
+
+// Per-conversation read state (client-side): the ts of the last message the user
+// has seen. Used for unread dots in the list and the unread count in the sidebar.
+const readKey = (pid, cid) => `chat-read-${pid}-${cid}`
+export const getRead = (pid, cid) => { try { return Number(localStorage.getItem(readKey(pid, cid)) || 0) } catch { return 0 } }
+export const setRead = (pid, cid, ts) => { try { localStorage.setItem(readKey(pid, cid), String(ts)) } catch { /* ignore */ } }
+
+// Count of conversations with a message newer than the user's last-read mark.
+export const unreadCount = (pid, conversations) =>
+  (conversations || []).filter((c) => c.last && c.last.ts > getRead(pid, c.id)).length

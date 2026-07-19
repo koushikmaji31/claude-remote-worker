@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom'
 import { api, getToken, getUser } from './api.js'
 import { getRepoLink, unlinkRepo } from './lib/github'
+import { getConversations, unreadCount } from './lib/chat'
 import ThemeToggle from './ui/ThemeToggle.jsx'
 import { avatarColor } from './ui/avatarColor.js'
 import ChatPanel from './components/ChatPanel.jsx'
@@ -133,6 +134,15 @@ export default function Project() {
     try { await unlinkRepo(pid); loadRepo() } catch (err) { setError(err.message) }
   }
 
+  // Unread discussion count for the sidebar badge (conversations with a message
+  // newer than the user's last-read mark). Polled so it stays current.
+  const [unread, setUnread] = useState(0)
+  useEffect(() => {
+    const tick = () => getConversations(pid).then((d) => setUnread(unreadCount(pid, d.conversations))).catch(() => {})
+    tick(); const iv = setInterval(tick, 8000)
+    return () => clearInterval(iv)
+  }, [pid, view])
+
   // Collapsible sidebar — persisted so it stays the way the user left it.
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem('side-collapsed') === '1' } catch { return false }
@@ -219,6 +229,7 @@ export default function Project() {
               <NavIcon id={n.id} />
               <span>{n.label}</span>
               {n.id === 'members' && <span className="nav-count">{memberCount}</span>}
+              {n.id === 'discussion' && unread > 0 && <span className="nav-count needs">{unread}</span>}
             </button>
           ))}
         </nav>

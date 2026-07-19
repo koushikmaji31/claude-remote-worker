@@ -6,7 +6,7 @@
 // Messages may carry an optional downscaled `image` (2MB cap). Shared tokens.
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { avatarColor } from '../ui/avatarColor.js'
-import { getConversations, createConversation, getConvMessages, postConvMessage } from '../lib/chat.js'
+import { getConversations, createConversation, getConvMessages, postConvMessage, getRead, setRead } from '../lib/chat.js'
 
 const MAX_EDGE = 1600
 const MAX_BYTES = 2 * 1024 * 1024
@@ -47,10 +47,6 @@ function relTime(ts) {
   if (s < 86400) return `${Math.floor(s / 3600)}h`
   return `${Math.floor(s / 86400)}d`
 }
-
-const readKey = (pid, cid) => `chat-read-${pid}-${cid}`
-const getRead = (pid, cid) => { try { return Number(localStorage.getItem(readKey(pid, cid)) || 0) } catch { return 0 } }
-const setRead = (pid, cid, ts) => { try { localStorage.setItem(readKey(pid, cid), String(ts)) } catch { /* ignore */ } }
 
 function ConvIcon({ row }) {
   if (row.type === 'everyone') return <span className="conv-icon everyone" aria-hidden>#</span>
