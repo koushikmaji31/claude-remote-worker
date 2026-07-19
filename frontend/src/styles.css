@@ -1238,6 +1238,9 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
   padding: var(--sp-3); box-shadow: var(--shadow-sm);
 }
 .board-card.is-done .board-card-title { color: var(--text-muted); text-decoration: line-through; }
+.board-card.clickable { cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s; }
+.board-card.clickable:hover { border-color: var(--brand-600); box-shadow: var(--shadow-md, var(--shadow-sm)); }
+.board-card.clickable:focus-visible { outline: 2px solid var(--brand-600); outline-offset: 1px; }
 .board-card-title { font-size: 13.5px; font-weight: 600; line-height: 1.35; }
 .board-card-body {
   font-size: 12px; color: var(--text-muted); margin-top: 4px; white-space: pre-wrap;
@@ -1379,6 +1382,42 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 /* Board edit fields should match the card's type scale, not the 16px default */
 .board-card-edit input, .board-new input { font-size: 13px; font-weight: 600; padding: 7px 10px; }
 .board-card-edit textarea, .board-new textarea { font-size: 12.5px; line-height: 1.5; padding: 8px 10px; }
+
+/* ---------- Ticket detail modal (Jira-style: description + details sidebar) ---------- */
+.tk-modal-backdrop {
+  position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.5);
+  display: flex; align-items: flex-start; justify-content: center; padding: 5vh 16px; overflow-y: auto;
+}
+.tk-modal {
+  width: 100%; max-width: 860px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column; max-height: 90vh;
+}
+.tk-modal-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: 12px 18px; border-bottom: 1px solid var(--border); }
+.tk-key { font-size: 12px; color: var(--text-muted); font-weight: 600; }
+.tk-head-actions { display: flex; align-items: center; gap: var(--sp-2); }
+.tk-status-select { font-size: 12.5px; padding: 5px 10px; border-radius: var(--r-sm); background: var(--surface-2); border: 1px solid var(--border); color: var(--text); }
+.tk-modal-close { background: none; border: none; color: var(--text-muted); font-size: 24px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.tk-modal-close:hover { color: var(--text); }
+.tk-modal-body { display: flex; gap: 0; overflow-y: auto; }
+.tk-modal-main { flex: 1; min-width: 0; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.tk-title-input { font-size: 19px; font-weight: 680; letter-spacing: -0.01em; border: 1px solid transparent; background: none; padding: 4px 6px; border-radius: var(--r-sm); }
+.tk-title-input:hover { border-color: var(--border); }
+.tk-title-input:focus { border-color: var(--brand-600); background: var(--surface-2); }
+.tk-section-label { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-top: 4px; }
+.tk-desc-input { font-size: 13px; line-height: 1.55; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); resize: vertical; }
+.tk-save-row { display: flex; gap: var(--sp-2); align-items: center; }
+.tk-modal-side { width: 260px; flex-shrink: 0; border-left: 1px solid var(--border); padding: 16px 18px; }
+.tk-side-title { font-size: 11px; letter-spacing: 0.06em; font-weight: 600; color: var(--text-faint); text-transform: uppercase; margin-bottom: 10px; }
+.tk-details { display: grid; grid-template-columns: 92px 1fr; gap: 10px 12px; margin: 0; font-size: 12.5px; }
+.tk-details dt { color: var(--text-muted); }
+.tk-details dd { margin: 0; color: var(--text); }
+.tk-person { display: inline-flex; align-items: center; gap: 6px; }
+.tk-modal-foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; }
+@media (max-width: 640px) {
+  .tk-modal-body { flex-direction: column; }
+  .tk-modal-side { width: auto; border-left: none; border-top: 1px solid var(--border); }
+}
 
 /* ============================================================
    Discussion — clean, Google-Chat-style (grouped rows, bubbles)

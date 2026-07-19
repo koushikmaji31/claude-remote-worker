@@ -187,33 +187,87 @@ function JiraCard({ card, onMove, moving, pid, onChanged }) {
   )
 }
 
-function Card({ card, onMove, onSave, onDelete, onJiraMove, jiraMoving, onJiraChanged, pid, colId }) {
-  const [open, setOpen] = useState(false)
+// Jira-style detail modal for a LOCAL ticket: big description + a Details sidebar
+// (status, assignee, reporter, timestamps, source). Opened by clicking a card.
+function CardDetailModal({ card, onClose, onSave, onMove, onDelete }) {
   const [title, setTitle] = useState(card.title)
   const [body, setBody] = useState(card.body || '')
   const dirty = title !== card.title || body !== (card.body || '')
 
+  // Keep the editor in sync if the card is refreshed by polling underneath us.
+  useEffect(() => { setTitle(card.title); setBody(card.body || '') }, [card.id])
+
+  return (
+    <div className="tk-modal-backdrop" onClick={onClose}>
+      <div className="tk-modal" onClick={(e) => e.stopPropagation()}>
+        <header className="tk-modal-head">
+          <span className="tk-key mono">TICKET-{card.id}</span>
+          <div className="tk-head-actions">
+            <select className="tk-status-select" value={card.status}
+                    onChange={(e) => onMove(e.target.value)} title="Change status">
+              {COLUMNS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+            <button className="tk-modal-close" onClick={onClose} aria-label="Close">×</button>
+          </div>
+        </header>
+
+        <div className="tk-modal-body">
+          <div className="tk-modal-main">
+            <input className="tk-title-input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ticket title" />
+            <div className="tk-section-label">Description</div>
+            <textarea className="tk-desc-input" rows={9} value={body} onChange={(e) => setBody(e.target.value)}
+                      placeholder="Add a description / context for this ticket…" />
+            {dirty && (
+              <div className="tk-save-row">
+                <button className="btn sm" disabled={!title.trim()}
+                        onClick={() => onSave({ title: title.trim(), body })}>Save</button>
+                <button className="board-move" onClick={() => { setTitle(card.title); setBody(card.body || '') }}>Cancel</button>
+              </div>
+            )}
+          </div>
+
+          <aside className="tk-modal-side">
+            <div className="tk-side-title">Details</div>
+            <dl className="tk-details">
+              <dt>Status</dt>
+              <dd><span className={`badge ticket-pill ${STATUSES.includes(card.status) ? card.status : 'todo'}`}>{STATUS_LABEL[STATUSES.includes(card.status) ? card.status : 'todo']}</span></dd>
+              <dt>Assignee</dt>
+              <dd>{card.assigned_to
+                ? <span className="tk-person"><span className="jira-avatar sm" style={{ background: avatarColor(card.assigned_to) }}>{initials(card.assigned_to)}</span>{card.assigned_to}</span>
+                : <span className="faint">Unassigned</span>}</dd>
+              <dt>Reporter</dt>
+              <dd>{card.created_by
+                ? <span className="tk-person"><span className="jira-avatar sm" style={{ background: avatarColor(card.created_by) }}>{initials(card.created_by)}</span>{card.created_by}</span>
+                : <span className="faint">—</span>}</dd>
+              <dt>Last update</dt>
+              <dd>{card.updated_by ? `${card.updated_by} · ${relTime(card.updated_at)}` : relTime(card.updated_at) || '—'}</dd>
+              <dt>Created</dt>
+              <dd>{relTime(card.created_at) || '—'}</dd>
+              <dt>Source</dt>
+              <dd>Local</dd>
+            </dl>
+          </aside>
+        </div>
+
+        <footer className="tk-modal-foot">
+          <button className="btn danger sm" onClick={onDelete}>Delete ticket</button>
+        </footer>
+      </div>
+    </div>
+  )
+}
+
+function Card({ card, onMove, onDelete, onOpen, onJiraMove, jiraMoving, onJiraChanged, pid, colId }) {
   if (card.source === 'jira') return <JiraCard card={card} onMove={onJiraMove} moving={jiraMoving} pid={pid} onChanged={onJiraChanged} />
 
   return (
-    <div className={`board-card ${card.status === 'done' ? 'is-done' : ''}`}>
-      <button className="board-card-titlebtn" onClick={() => setOpen((o) => !o)} title="Open ticket">
-        {card.title}
-      </button>
-      {!open && card.body && <div className="board-card-body">{card.body}</div>}
-      {open && (
-        <div className="board-card-edit">
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
-          <textarea value={body} rows={4} onChange={(e) => setBody(e.target.value)}
-            placeholder="Description / context for this ticket…" />
-          <div className="board-card-editrow">
-            <button className="board-move" onClick={() => setOpen(false)}>Close</button>
-            <button className="btn sm" disabled={!dirty || !title.trim()}
-              onClick={() => { onSave({ title: title.trim(), body }); setOpen(false) }}>Save</button>
-          </div>
-        </div>
-      )}
-      <div className="board-card-foot">
+    <div className={`board-card clickable ${card.status === 'done' ? 'is-done' : ''}`}
+         role="button" tabIndex={0} title="Open ticket"
+         onClick={() => onOpen(card.id)}
+         onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onOpen(card.id)}>
+      <div className="board-card-title">{card.title}</div>
+      {card.body && <div className="board-card-body">{card.body}</div>}
+      <div className="board-card-foot" onClick={(e) => e.stopPropagation()}>
         <span className="faint board-card-by">{card.updated_by || card.created_by || ''}</span>
         <div className="board-card-moves">
           {COLUMNS.filter((t) => t.id !== colId).map((t) => (
@@ -235,6 +289,7 @@ export default function TicketPanel({ pid }) {
   const [adding, setAdding] = useState(false)
   const [movingKey, setMovingKey] = useState(null)  // Jira key mid-transition
   const [assigneeFilter, setAssigneeFilter] = useState(null)  // filter Jira cards by assignee
+  const [selected, setSelected] = useState(null)  // local card id -> detail modal open
 
   const poll = useCallback(() => {
     getTicket(pid).then(setData).catch(() => {})
@@ -319,8 +374,8 @@ export default function TicketPanel({ pid }) {
                     {colCards.length === 0 && <div className="board-empty faint">—</div>}
                     {colCards.map((c) => (
                       <Card key={c.id} card={c} colId={col.id}
+                        onOpen={(id) => setSelected(id)}
                         onMove={(status) => act(() => updateCard(pid, c.id, { status }))}
-                        onSave={(patch) => act(() => updateCard(pid, c.id, patch))}
                         onDelete={() => act(() => deleteCard(pid, c.id))}
                         onJiraMove={(to) => jiraMove(c.external_id, to)}
                         jiraMoving={movingKey === c.external_id}
@@ -371,6 +426,20 @@ export default function TicketPanel({ pid }) {
           )}
         </div>
       </section>
+
+      {(() => {
+        const sel = selected != null ? cards.find((c) => c.id === selected && c.source !== 'jira') : null
+        if (!sel) return null
+        return (
+          <CardDetailModal
+            card={sel}
+            onClose={() => setSelected(null)}
+            onSave={(patch) => act(() => updateCard(pid, sel.id, patch))}
+            onMove={(status) => act(() => updateCard(pid, sel.id, { status }))}
+            onDelete={() => { act(() => deleteCard(pid, sel.id)); setSelected(null) }}
+          />
+        )
+      })()}
     </div>
   )
 }
