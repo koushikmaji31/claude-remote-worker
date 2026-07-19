@@ -583,7 +583,27 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
   display: flex; align-items: center; justify-content: space-between;
   margin-top: var(--sp-2); padding: 0 var(--sp-2);
 }
-.side-user { font-size: 12.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side-user {
+  font-size: 12.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: none; border: none; font-family: inherit; cursor: pointer; padding: 2px 4px; border-radius: var(--r-sm); text-align: left; max-width: 100%;
+}
+.side-user:hover { color: var(--text); background: var(--surface-2); }
+
+/* Profile modal (identity + set/change password) */
+.pf-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,0.5); display: flex; align-items: flex-start; justify-content: center; padding: 8vh 16px; overflow-y: auto; }
+.pf-modal { width: 100%; max-width: 440px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: 0 24px 60px rgba(0,0,0,0.35); }
+.pf-head { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+.pf-id { min-width: 0; flex: 1; }
+.pf-name { font-size: 15px; font-weight: 650; }
+.pf-close { background: none; border: none; color: var(--text-muted); font-size: 24px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.pf-close:hover { color: var(--text); }
+.pf-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.pf-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.pf-k { color: var(--text-muted); }
+.pf-v { font-weight: 600; }
+.pf-form { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); padding-top: 14px; }
+.pf-section-title { font-size: 13px; font-weight: 650; }
+.pf-ok { font-size: 12.5px; color: var(--success); }
 
 /* ---------- Collapsible sidebar ---------- */
 .side-collapse {

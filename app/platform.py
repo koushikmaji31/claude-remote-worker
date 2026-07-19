@@ -504,7 +504,35 @@ def auth_google(body: GoogleAuthIn):
 @app.get("/api/me")
 def me(user=Depends(current_user)):
     return {"user_id": user["id"], "name": user["name"], "email": user["email"],
-            "picture": user["picture"]}
+            "picture": user["picture"], "auth_provider": user["auth_provider"],
+            "has_password": bool(user["password_hash"])}
+
+
+class PasswordSetIn(BaseModel):
+    new_password: str
+    current_password: Optional[str] = None
+
+
+@app.post("/api/account/password")
+def set_account_password(body: PasswordSetIn, user=Depends(current_user)):
+    """Set or change the caller's password. Google-only accounts (no existing
+    hash) can set one to enable email+password login alongside Google; accounts
+    that already have a password must confirm the current one."""
+    if len(body.new_password or "") < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    conn = db()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+        if row["password_hash"] and not verify_password(body.current_password or "", row["password_hash"]):
+            raise HTTPException(401, "Current password is incorrect")
+        # A google account that adds a password becomes usable by BOTH methods.
+        provider = "both" if row["auth_provider"] == "google" else (row["auth_provider"] or "password")
+        conn.execute("UPDATE users SET password_hash=?, auth_provider=? WHERE id=?",
+                     (hash_password(body.new_password), provider, user["id"]))
+        conn.commit()
+        return {"ok": True, "auth_provider": provider, "has_password": True}
+    finally:
+        conn.close()
 
 
 # ---------- Projects ----------

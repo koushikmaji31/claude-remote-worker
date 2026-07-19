@@ -9,6 +9,7 @@ import ChatPanel from './components/ChatPanel.jsx'
 import GitHubPanel from './components/GitHubPanel.jsx'
 import OverviewDashboard from './components/OverviewDashboard.jsx'
 import TicketPanel from './components/TicketPanel.jsx'
+import ProfileModal from './components/ProfileModal.jsx'
 import FleetPanel from './components/FleetPanel.jsx'
 
 function initials(name) {
@@ -136,6 +137,7 @@ export default function Project() {
 
   // Unread discussion count for the sidebar badge (conversations with a message
   // newer than the user's last-read mark). Polled so it stays current.
+  const [showProfile, setShowProfile] = useState(false)
   const [unread, setUnread] = useState(0)
   useEffect(() => {
     const tick = () => getConversations(pid).then((d) => setUnread(unreadCount(pid, d.conversations))).catch(() => {})
@@ -243,7 +245,7 @@ export default function Project() {
             <span>All projects</span>
           </Link>
           <div className="side-foot-row">
-            <span className="side-user">{me?.name}</span>
+            <button className="side-user" onClick={() => setShowProfile(true)} title="Profile & password">{me?.name}</button>
             <ThemeToggle />
           </div>
         </div>
@@ -338,6 +340,8 @@ export default function Project() {
           )}
         </div>
       </main>
+
+      {showProfile && <ProfileModal onClose={() => setShowProfile(false)} />}
     </div>
   )
 }
