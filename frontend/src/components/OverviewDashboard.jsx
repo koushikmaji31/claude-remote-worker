@@ -1,14 +1,20 @@
-// Overview dashboard — SDLC metrics at a glance for developers and PMs.
-// Real signals come from the platform + linked GitHub repo (commits, branches,
-// PRs, issues, members, discussion volume). Metrics we don't measure yet ship
-// as dummies and carry a small "sample" tag so nobody mistakes them for truth.
-// Visual language: gradient hero cards, pill badges, weekly activity bars
-// (see .ov-* in styles.css; light+dark variants).
+// Overview dashboard — a real snapshot of the workspace. Numbers come from live
+// sources: the linked GitHub repo (commits, branches, PRs, issues), the project
+// bus/fleet (agents online, active, tokens), the ticket board (done / in
+// progress / todo), members, and discussion volume. Repo-dependent stats show a
+// "link repo" hint until a repo is linked; nothing here is faked.
+// Visual language: gradient hero cards, pill badges, weekly activity bars (.ov-*).
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import { getRepoLink, ghGraph, ghIssues } from '../lib/github'
+import { getTicket } from '../lib/ticket'
 
-const Sample = () => <span className="ov-sample" title="Sample data — not measured yet">sample</span>
+function fmt(n) {
+  if (n == null) return '—'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k'
+  return String(n)
+}
 
 function Stat({ value, label, pill, pillClass = '', ready = true }) {
   return (
@@ -41,13 +47,12 @@ function weekBuckets(commits) {
   return buckets
 }
 
-// Fixed pseudo-random heights for the loading shimmer, so the pill keeps its
-// shape while real weekly counts are on their way.
 const WAIT_HEIGHTS = [10, 18, 8, 22, 12, 26, 9, 16, 20, 11, 24, 14]
 
-function Timeline({ commits, live, pending }) {
+function Timeline({ commits, live, pending, delta }) {
   const buckets = useMemo(() => weekBuckets(commits), [commits])
   const max = Math.max(...buckets.map((b) => b.count), 1)
+  const up = (delta ?? 0) >= 0
   return (
     <div className="ov-timeline">
       <div className="ov-timeline-track">
@@ -73,18 +78,20 @@ function Timeline({ commits, live, pending }) {
           )
         })}
       </div>
-      <div className="ov-float-chip">
-        <span className="ov-trend" aria-hidden>↗</span>
-        <div>
-          <div className="ov-chip-title">Delivery improving</div>
-          <div className="faint">+3.2 last 30 days {!pending && !live && <Sample />}</div>
+      {live && (
+        <div className="ov-float-chip">
+          <span className="ov-trend" aria-hidden>{up ? '↗' : '↘'}</span>
+          <div>
+            <div className="ov-chip-title">{up ? 'More commits' : 'Fewer commits'} lately</div>
+            <div className="faint">{up ? '+' : ''}{delta} vs prior 30 days</div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
 
-function Tile({ icon, name, value, unit, pill, spark, sample }) {
+function Tile({ icon, name, value, unit, pill, spark }) {
   return (
     <div className="ov-tile">
       <div className="ov-tile-head">
@@ -94,7 +101,7 @@ function Tile({ icon, name, value, unit, pill, spark, sample }) {
       </div>
       <div className="ov-tile-value">
         <span className="ov-num md">{value}</span>
-        <span className="ov-unit">{unit}{sample && <> <Sample /></>}</span>
+        <span className="ov-unit">{unit}</span>
       </div>
       {spark && (
         <svg className="ov-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden>
@@ -109,6 +116,8 @@ function Tile({ icon, name, value, unit, pill, spark, sample }) {
 export default function OverviewDashboard({ pid, project }) {
   const [gh, setGh] = useState(null)      // {graph, issues} | null (not linked / error)
   const [msgCount, setMsgCount] = useState(null)
+  const [fleet, setFleet] = useState(null)   // /fleet summary + agents
+  const [board, setBoard] = useState(null)   // {total, todo, doing, done}
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -120,10 +129,18 @@ export default function OverviewDashboard({ pid, project }) {
           const [graph, issues] = await Promise.all([ghGraph(pid), ghIssues(pid)])
           if (on) setGh({ graph, issues: issues.issues })
         }
-      } catch { /* unlinked or GitHub unavailable -> dummies below */ }
+      } catch { /* unlinked or GitHub unavailable */ }
+      try { const m = await api(`/api/projects/${pid}/messages`); if (on) setMsgCount(m.messages.length) } catch { /* ignore */ }
+      try { const f = await api(`/api/projects/${pid}/fleet`); if (on) setFleet(f) } catch { /* ignore */ }
       try {
-        const m = await api(`/api/projects/${pid}/messages`)
-        if (on) setMsgCount(m.messages.length)
+        const t = await getTicket(pid)
+        const cards = t.cards || []
+        const c = { total: cards.length, todo: 0, doing: 0, done: 0 }
+        for (const card of cards) {
+          const s = ['todo', 'doing', 'done'].includes(card.status) ? card.status : 'todo'
+          c[s]++
+        }
+        if (on) setBoard(c)
       } catch { /* ignore */ }
       if (on) setLoaded(true)
     })()
@@ -133,63 +150,98 @@ export default function OverviewDashboard({ pid, project }) {
   const live = !!gh
   const commits30 = useMemo(() => {
     if (!gh) return null
-    const cutoff = Date.now() - 30 * 86400e3
-    return gh.graph.commits.filter((c) => c.date && new Date(c.date).getTime() > cutoff).length
+    const cut = Date.now() - 30 * 86400e3
+    return gh.graph.commits.filter((c) => c.date && new Date(c.date).getTime() > cut).length
+  }, [gh])
+  const commitDelta = useMemo(() => {
+    if (!gh) return null
+    const now = Date.now(), d30 = 30 * 86400e3
+    const inRange = (c, a, b) => c.date && new Date(c.date).getTime() > now - a && new Date(c.date).getTime() <= now - b
+    const cur = gh.graph.commits.filter((c) => inRange(c, d30, 0)).length
+    const prev = gh.graph.commits.filter((c) => inRange(c, 2 * d30, d30)).length
+    return cur - prev
   }, [gh])
 
   const members = project.members.length
-  const branches = gh ? gh.graph.branches.length : 6
   const pulls = gh ? gh.graph.pulls : []
   const issues = gh ? gh.issues : []
-  const openPrs = gh ? pulls.length : 4
-  const openIssues = gh ? issues.length : 11
-  const commits = commits30 ?? 87
+  const openPrs = gh ? pulls.length : null
+  const openIssues = gh ? issues.length : null
+  const branches = gh ? gh.graph.branches.length : null
+
+  // Fleet (real)
+  const online = fleet?.online ?? null
+  const working = fleet?.working ?? null
+  const needsYou = fleet?.needs_you ?? 0
+  const agentCount = fleet?.agents?.length ?? null
+  const tokens = useMemo(() => {
+    if (!fleet?.agents) return null
+    return fleet.agents.reduce((s, a) => s + ((a.metrics?.tokens_in || 0) + (a.metrics?.tokens_out || 0)), 0)
+  }, [fleet])
+  const editing = fleet?.agents ? fleet.agents.filter((a) => (a.files || []).length > 0).length : 0
+
+  // Board (real)
+  const bTotal = board?.total ?? 0
+  const bDone = board?.done ?? 0
+  const bDoing = board?.doing ?? 0
+  const bPct = bTotal ? Math.round((bDone / bTotal) * 100) : 0
+
+  const commitSpark = useMemo(() => {
+    const b = weekBuckets(gh?.graph.commits).map((x) => x.count)
+    const max = Math.max(...b, 1)
+    return b.slice(-8).map((v) => v / max)
+  }, [gh])
 
   const attention = [
     ...pulls.slice(0, 2).map((p) => ({
       key: `pr${p.number}`, kind: 'PR', danger: p.draft,
-      text: `#${p.number} ${p.title}`, sub: `${p.head} → ${p.base}${p.draft ? ' · draft' : ''}`,
-      href: p.html_url,
+      text: `#${p.number} ${p.title}`, sub: `${p.head} → ${p.base}${p.draft ? ' · draft' : ''}`, href: p.html_url,
     })),
     ...[...issues].sort((a, b) => b.comments - a.comments).slice(0, 2).map((i) => ({
       key: `is${i.number}`, kind: 'Issue', danger: i.comments > 5,
-      text: `#${i.number} ${i.title}`, sub: `${i.comments} comments · @${i.user}`,
-      href: i.html_url,
+      text: `#${i.number} ${i.title}`, sub: `${i.comments} comments · @${i.user}`, href: i.html_url,
     })),
   ]
 
+  const repoPill = (v, good) => (live ? (good || 'live') : 'link repo')
+  const repoClass = () => (live ? 'lime' : 'warn')
+
   return (
     <div className="ov">
-      {/* Top stat strip — real counts when GitHub is linked */}
+      {/* Top stat strip — all live */}
       <div className="ov-stats">
-        <Stat ready={loaded} value={commits} label="Commits · 30d" pill={live ? 'live' : 'sample'} pillClass={live ? 'lime' : ''} />
-        <Stat ready={loaded} value={branches} label="Active branches" pill={live ? 'in repo' : 'sample'} />
-        <Stat ready={loaded} value={openPrs} label="Open PRs" pill={openPrs > 6 ? 'review debt' : 'in range'} pillClass={openPrs > 6 ? 'warn' : ''} />
-        <Stat ready={loaded} value={openIssues} label="Open issues" pill={openIssues > 20 ? 'out of range' : 'in range'} pillClass={openIssues > 20 ? 'warn' : ''} />
+        <Stat ready={loaded} value={live ? commits30 : '—'} label="Commits · 30d" pill={repoPill()} pillClass={repoClass()} />
+        <Stat ready={loaded} value={live ? branches : '—'} label="Active branches" pill={repoPill()} pillClass={repoClass()} />
+        <Stat ready={loaded} value={live ? openPrs : '—'} label="Open PRs"
+              pill={live ? (openPrs > 6 ? 'review debt' : 'in range') : 'link repo'} pillClass={live ? (openPrs > 6 ? 'warn' : '') : 'warn'} />
+        <Stat ready={loaded} value={live ? openIssues : '—'} label="Open issues"
+              pill={live ? (openIssues > 20 ? 'out of range' : 'in range') : 'link repo'} pillClass={live ? (openIssues > 20 ? 'warn' : '') : 'warn'} />
+        <Stat ready={fleet !== null} value={online ?? 0} label="Agents online" pill="live" pillClass="lime" />
+        <Stat ready={fleet !== null} value={working ?? 0} label="Active agents" pill={needsYou > 0 ? `${needsYou} need you` : 'live'} pillClass={needsYou > 0 ? 'warn' : 'lime'} />
         <Stat value={members} label="Team members" pill="live" pillClass="lime" />
         <Stat ready={msgCount !== null} value={msgCount ?? 0} label="Messages" pill="live" pillClass="lime" />
       </div>
 
       {/* Commit activity timeline (per week) */}
-      <Timeline commits={gh?.graph.commits} live={live} pending={!loaded} />
+      <Timeline commits={gh?.graph.commits} live={live} pending={!loaded} delta={commitDelta} />
 
-      {/* Hero cards */}
+      {/* Hero cards — real board progress + real fleet */}
       <div className="ov-hero">
         <div className="ov-card score">
-          <div className="ov-card-title">Delivery Score</div>
-          <div className="ov-num hero">78</div>
-          <div className="ov-card-sub">On Track <Sample /></div>
+          <div className="ov-card-title">Board progress</div>
+          <div className="ov-num hero">{bPct}%</div>
+          <div className="ov-card-sub">{bDone} of {bTotal} tickets done{bDoing ? ` · ${bDoing} in progress` : ''}</div>
           <div className="ov-card-ruler" aria-hidden>
-            {Array.from({ length: 32 }, (_, i) => <span key={i} className={i === 24 ? 'mark' : ''} />)}
+            {Array.from({ length: 32 }, (_, i) => <span key={i} className={i === Math.round((bPct / 100) * 31) ? 'mark' : ''} />)}
           </div>
         </div>
 
         <div className="ov-card sprint">
-          <div className="ov-card-title">Sprint 14</div>
-          <div className="ov-num hero">5</div>
-          <div className="ov-card-sub">days left · 2.5 days ahead <Sample /></div>
+          <div className="ov-card-title">Fleet</div>
+          <div className="ov-num hero">{working ?? 0}</div>
+          <div className="ov-card-sub">active · {online ?? 0} online{needsYou > 0 ? ` · ${needsYou} need you` : ''}</div>
           <div className="ov-card-ruler" aria-hidden>
-            {Array.from({ length: 32 }, (_, i) => <span key={i} className={i === 20 ? 'mark' : ''} />)}
+            {Array.from({ length: 32 }, (_, i) => <span key={i} className={agentCount && i === Math.min(31, Math.round(((working ?? 0) / Math.max(agentCount, 1)) * 31)) ? 'mark' : ''} />)}
           </div>
         </div>
 
@@ -197,40 +249,38 @@ export default function OverviewDashboard({ pid, project }) {
           <div className="ov-panel">
             <div className="ov-panel-head">Agent collaboration</div>
             <div className="ov-panel-big">
-              <span className="ov-num md">1.2M</span>
-              <span className="ov-unit">tokens saved <Sample /></span>
+              <span className="ov-num md">{fmt(tokens)}</span>
+              <span className="ov-unit">tokens processed</span>
             </div>
             <p className="faint" style={{ margin: '6px 0 0' }}>
-              Claude sessions coordinated over the project bus instead of re-reading context.
-              {msgCount !== null && <> {msgCount} messages exchanged here.</>}
+              Across {agentCount ?? 0} agent{agentCount === 1 ? '' : 's'} coordinating over the project bus
+              {msgCount !== null && <> · {msgCount} messages exchanged</>}.
             </p>
           </div>
           <div className="ov-panel">
-            <div className="ov-panel-head">Staging deploy pending</div>
+            <div className="ov-panel-head">Work in progress</div>
             <div className="ov-panel-big">
-              <span className="ov-num md">7-10</span>
-              <span className="ov-unit">min <Sample /></span>
+              <span className="ov-num md">{bDoing}</span>
+              <span className="ov-unit">ticket{bDoing === 1 ? '' : 's'} in progress</span>
             </div>
-            <div className="ov-progress" aria-hidden><span /></div>
-            <p className="faint" style={{ margin: '6px 0 0' }}>Until then, CI is verifying the release branch.</p>
+            <p className="faint" style={{ margin: '6px 0 0' }}>
+              {editing > 0 ? `${editing} agent${editing === 1 ? '' : 's'} currently editing files.` : 'No agents are editing files right now.'}
+            </p>
           </div>
         </div>
       </div>
 
-      {/* Engineering health tiles */}
+      {/* Live metric tiles */}
       <div className="ov-section-head">
-        <h3>Engineering health</h3>
-        <p className="faint">A snapshot of how the team is shipping.</p>
+        <h3>Live metrics</h3>
+        <p className="faint">Pulled straight from the repo, the bus, and the board.</p>
       </div>
       <div className="ov-tiles">
-        <Tile icon="⏱" name="Lead time" value="2.4" unit="days" pill="p50" sample
-              spark={[0.7, 0.6, 0.65, 0.5, 0.45, 0.5, 0.35, 0.3]} />
-        <Tile icon="⇄" name="PR merge time" value={18} unit="hours" sample
-              spark={[0.4, 0.5, 0.45, 0.6, 0.5, 0.4, 0.45, 0.35]} />
-        <Tile icon="✓" name="Review coverage" value="92%" unit="of merges" pill="healthy" sample
-              spark={[0.5, 0.55, 0.6, 0.62, 0.7, 0.72, 0.8, 0.85]} />
-        <Tile icon="◆" name="Velocity" value={42} unit="pts / sprint" sample
-              spark={[0.4, 0.45, 0.5, 0.42, 0.55, 0.6, 0.58, 0.65]} />
+        <Tile icon="◷" name="Commits" value={live ? commits30 : '—'} unit="last 30 days" pill={live ? undefined : 'link repo'}
+              spark={live ? commitSpark : undefined} />
+        <Tile icon="✓" name="Tickets done" value={bDone} unit={`of ${bTotal}`} pill={bTotal && bDone === bTotal ? 'all done' : undefined} />
+        <Tile icon="⇄" name="Open PRs" value={live ? openPrs : '—'} unit="to review" pill={live ? undefined : 'link repo'} />
+        <Tile icon="◎" name="Active agents" value={working ?? 0} unit={`of ${agentCount ?? 0} online`} />
       </div>
 
       {/* Needs attention — real PRs/issues when linked */}
@@ -256,7 +306,7 @@ export default function OverviewDashboard({ pid, project }) {
 
       {loaded && !live && (
         <p className="faint" style={{ margin: 0 }}>
-          Link a GitHub repository in the Branches tab to replace sample numbers with live repo data.
+          Link a GitHub repository in the Branches tab to fill in the repo metrics above.
         </p>
       )}
     </div>
