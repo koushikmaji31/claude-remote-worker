@@ -98,6 +98,21 @@ def init_db():
             image TEXT,
             ts REAL NOT NULL
         );
+        -- Discussion conversations (Google-Chat style): the project-wide 'everyone'
+        -- channel plus 1:1 'dm's and named 'group's. Members are humans only.
+        CREATE TABLE IF NOT EXISTS conversations(
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER REFERENCES projects(id),
+            type TEXT NOT NULL,          -- 'everyone' | 'dm' | 'group'
+            name TEXT,                   -- group name; NULL for everyone/dm
+            created_by INTEGER REFERENCES users(id),
+            created_at REAL
+        );
+        CREATE TABLE IF NOT EXISTS conversation_members(
+            conversation_id INTEGER REFERENCES conversations(id),
+            user_id INTEGER REFERENCES users(id),
+            PRIMARY KEY(conversation_id, user_id)
+        );
         -- GitHub identity: one linked GitHub account per platform user (Phase 1, PAT-based).
         -- token_enc is sealed at rest (see _seal/_unseal). auth_kind future-proofs OAuth/App.
         CREATE TABLE IF NOT EXISTS gh_identities(
@@ -233,6 +248,20 @@ def init_db():
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if "image" not in cols:
         conn.execute("ALTER TABLE messages ADD COLUMN image TEXT")
+    # conversation_id: which Discussion conversation a message belongs to. Existing
+    # project-wide messages are backfilled into each project's 'everyone' channel.
+    if "conversation_id" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN conversation_id INTEGER")
+        for pr in conn.execute("SELECT DISTINCT project_id FROM messages WHERE project_id IS NOT NULL").fetchall():
+            pidv = pr["project_id"]
+            row = conn.execute("SELECT id FROM conversations WHERE project_id=? AND type='everyone'", (pidv,)).fetchone()
+            if row:
+                ev = row["id"]
+            else:
+                cur = conn.execute("INSERT INTO conversations(project_id, type, name, created_by, created_at) VALUES(?,?,?,?,?)",
+                                   (pidv, "everyone", None, None, time.time()))
+                ev = cur.lastrowid
+            conn.execute("UPDATE messages SET conversation_id=? WHERE project_id=? AND conversation_id IS NULL", (ev, pidv))
     # can_manage: per-member capability to connect/manage integrations
     # (GitHub/Jira/GitLab). The project admin always can; others only if the
     # admin grants it. Everyone else sees integrations read-only.
@@ -589,8 +618,155 @@ class MessageIn(BaseModel):
     image: Optional[str] = None  # optional data URL ("data:image/...;base64,...")
 
 
+class ConversationIn(BaseModel):
+    type: str                         # 'dm' | 'group'
+    member_ids: list[int] = []        # other participants (me is added automatically)
+    name: Optional[str] = None        # group name
+
+
+def _everyone_conv(conn, pid: int) -> int:
+    """Get-or-create the project-wide 'everyone' conversation id."""
+    row = conn.execute("SELECT id FROM conversations WHERE project_id=? AND type='everyone'", (pid,)).fetchone()
+    if row:
+        return row["id"]
+    cur = conn.execute("INSERT INTO conversations(project_id, type, name, created_by, created_at) VALUES(?,?,?,?,?)",
+                       (pid, "everyone", None, None, time.time()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def _require_conv(conn, pid: int, cid: int, user_id: int):
+    """Return the conversation row if the user may see it, else raise 403/404."""
+    conv = conn.execute("SELECT * FROM conversations WHERE id=? AND project_id=?", (cid, pid)).fetchone()
+    if not conv:
+        raise HTTPException(404, "conversation not found")
+    if conv["type"] == "everyone":
+        return conv  # every project member is implicitly in it
+    m = conn.execute("SELECT 1 FROM conversation_members WHERE conversation_id=? AND user_id=?", (cid, user_id)).fetchone()
+    if not m:
+        raise HTTPException(403, "not a participant in this conversation")
+    return conv
+
+
+def _conv_view(conn, pid: int, conv, me_id: int) -> dict:
+    """Shape a conversation for the list: title, members, last message."""
+    cid = conv["id"]
+    if conv["type"] == "everyone":
+        title, members = "Everyone", []
+    else:
+        rows = conn.execute(
+            "SELECT u.id, u.name FROM conversation_members cm JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=?",
+            (cid,)).fetchall()
+        members = [{"id": r["id"], "name": r["name"]} for r in rows]
+        if conv["type"] == "dm":
+            other = next((m for m in members if m["id"] != me_id), None)
+            title = other["name"] if other else "Direct message"
+        else:
+            title = conv["name"] or "Group"
+    last = conn.execute(
+        "SELECT sender, text, image, ts FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+    return {
+        "id": cid, "type": conv["type"], "title": title, "members": members,
+        "last": ({"sender": last["sender"], "text": last["text"] or ("[image]" if last["image"] else ""), "ts": last["ts"]} if last else None),
+    }
+
+
+@app.get("/api/projects/{pid}/conversations")
+def list_conversations(pid: int, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        ev = _everyone_conv(conn, pid)
+        convs = [conn.execute("SELECT * FROM conversations WHERE id=?", (ev,)).fetchone()]
+        rows = conn.execute(
+            "SELECT c.* FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id "
+            "WHERE c.project_id=? AND cm.user_id=? AND c.type!='everyone'", (pid, user["id"])).fetchall()
+        convs += list(rows)
+        views = [_conv_view(conn, pid, c, user["id"]) for c in convs]
+        # newest activity first, but 'everyone' pinned on top
+        views.sort(key=lambda v: (v["type"] != "everyone", -((v["last"] or {}).get("ts") or 0)))
+        return {"conversations": views}
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{pid}/conversations")
+def create_conversation(pid: int, body: ConversationIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        ids = {int(i) for i in (body.member_ids or [])}
+        ids.discard(user["id"])
+        # participants must be project members
+        member_ids = {r["user_id"] for r in conn.execute("SELECT user_id FROM members WHERE project_id=?", (pid,)).fetchall()}
+        if not ids or not ids.issubset(member_ids):
+            raise HTTPException(400, "participants must be project members")
+        if body.type == "dm":
+            if len(ids) != 1:
+                raise HTTPException(400, "a DM has exactly one other participant")
+            other = next(iter(ids))
+            # dedup: reuse an existing 1:1 dm between the two
+            for r in conn.execute(
+                "SELECT c.id FROM conversations c WHERE c.project_id=? AND c.type='dm'", (pid,)).fetchall():
+                mem = {x["user_id"] for x in conn.execute("SELECT user_id FROM conversation_members WHERE conversation_id=?", (r["id"],)).fetchall()}
+                if mem == {user["id"], other}:
+                    return _conv_view(conn, pid, conn.execute("SELECT * FROM conversations WHERE id=?", (r["id"],)).fetchone(), user["id"])
+            cur = conn.execute("INSERT INTO conversations(project_id, type, name, created_by, created_at) VALUES(?,?,?,?,?)",
+                               (pid, "dm", None, user["id"], time.time()))
+        elif body.type == "group":
+            if not (body.name or "").strip():
+                raise HTTPException(400, "group name required")
+            cur = conn.execute("INSERT INTO conversations(project_id, type, name, created_by, created_at) VALUES(?,?,?,?,?)",
+                               (pid, "group", body.name.strip(), user["id"], time.time()))
+        else:
+            raise HTTPException(400, "type must be 'dm' or 'group'")
+        cid = cur.lastrowid
+        for uid in ids | {user["id"]}:
+            conn.execute("INSERT OR IGNORE INTO conversation_members(conversation_id, user_id) VALUES(?,?)", (cid, uid))
+        conn.commit()
+        return _conv_view(conn, pid, conn.execute("SELECT * FROM conversations WHERE id=?", (cid,)).fetchone(), user["id"])
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/{pid}/conversations/{cid}/messages")
+def post_conv_message(pid: int, cid: int, body: MessageIn, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        _require_conv(conn, pid, cid, user["id"])
+        if not (body.text or "").strip() and not body.image:
+            raise HTTPException(400, "Message must have text or an image")
+        if body.image and len(body.image) > 2 * 1024 * 1024:
+            raise HTTPException(413, "Image exceeds 2MB limit")
+        conn.execute(
+            "INSERT INTO messages(project_id, conversation_id, sender, text, image, ts) VALUES(?,?,?,?,?,?)",
+            (pid, cid, user["name"], body.text, body.image, time.time()),
+        )
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects/{pid}/conversations/{cid}/messages")
+def get_conv_messages(pid: int, cid: int, since_id: int = 0, user=Depends(current_user)):
+    conn = db()
+    try:
+        require_member(conn, pid, user["id"])
+        _require_conv(conn, pid, cid, user["id"])
+        rows = conn.execute(
+            "SELECT id, sender, text, image, ts FROM messages WHERE conversation_id=? AND id>? ORDER BY id",
+            (cid, since_id),
+        ).fetchall()
+        return {"messages": [dict(r) for r in rows]}
+    finally:
+        conn.close()
+
+
 @app.post("/api/projects/{pid}/messages")
 def post_message(pid: int, body: MessageIn, user=Depends(current_user)):
+    """Back-compat: posts to the project's 'everyone' conversation."""
     conn = db()
     try:
         require_member(conn, pid, user["id"])
@@ -598,9 +774,10 @@ def post_message(pid: int, body: MessageIn, user=Depends(current_user)):
             raise HTTPException(400, "Message must have text or an image")
         if body.image and len(body.image) > 2 * 1024 * 1024:
             raise HTTPException(413, "Image exceeds 2MB limit")
+        ev = _everyone_conv(conn, pid)
         conn.execute(
-            "INSERT INTO messages(project_id, sender, text, image, ts) VALUES(?,?,?,?,?)",
-            (pid, user["name"], body.text, body.image, time.time()),
+            "INSERT INTO messages(project_id, conversation_id, sender, text, image, ts) VALUES(?,?,?,?,?,?)",
+            (pid, ev, user["name"], body.text, body.image, time.time()),
         )
         conn.commit()
         return {"ok": True}
@@ -610,12 +787,14 @@ def post_message(pid: int, body: MessageIn, user=Depends(current_user)):
 
 @app.get("/api/projects/{pid}/messages")
 def get_messages(pid: int, since_id: int = 0, user=Depends(current_user)):
+    """Back-compat: reads the project's 'everyone' conversation."""
     conn = db()
     try:
         require_member(conn, pid, user["id"])
+        ev = _everyone_conv(conn, pid)
         rows = conn.execute(
-            "SELECT id, sender, text, image, ts FROM messages WHERE project_id=? AND id>? ORDER BY id",
-            (pid, since_id),
+            "SELECT id, sender, text, image, ts FROM messages WHERE conversation_id=? AND id>? ORDER BY id",
+            (ev, since_id),
         ).fetchall()
         return {"messages": [dict(r) for r in rows]}
     finally:

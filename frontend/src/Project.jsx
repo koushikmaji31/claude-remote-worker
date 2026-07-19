@@ -290,7 +290,7 @@ export default function Project() {
 
           {view === 'fleet' && <FleetPanel pid={pid} />}
 
-          {view === 'discussion' && <ChatPanel pid={pid} me={me} />}
+          {view === 'discussion' && <ChatPanel pid={pid} me={me} members={project.members} />}
 
           {view === 'branches' && <GitHubPanel pid={pid} canManage={!!project.can_manage} repo={repo} reloadRepo={loadRepo} />}
 
