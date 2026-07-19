@@ -1471,13 +1471,14 @@ a.gh-login:hover { color: var(--brand-600); text-decoration: underline; }
 .conv-item-time { font-size: 11px; flex-shrink: 0; }
 .conv-item-last { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 .conv-unread { position: absolute; right: 8px; top: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--brand-500); }
-.conv-new { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
-.conv-group-name { font-size: 13px; padding: 7px 10px; }
-.conv-pick { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.conv-pick-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: var(--r-sm); font-size: 13px; cursor: pointer; }
-.conv-pick-row:hover { background: var(--surface-2); }
-.conv-pick-row.on { background: var(--surface-2); }
-.conv-new-actions { display: flex; gap: var(--sp-2); }
+.conv-newgroup { background: none; border: none; color: var(--brand-600); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 2px 4px; }
+.conv-newgroup:hover { text-decoration: underline; }
+.conv-search { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.conv-search input { width: 100%; font-size: 13px; padding: 7px 11px; border-radius: var(--r-pill); background: var(--surface-2); border: 1px solid var(--border); }
+.conv-group-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.conv-item.picked { background: color-mix(in srgb, var(--brand-500) 16%, transparent); }
+.conv-item.muted-row { opacity: 0.4; cursor: default; }
+.conv-check { position: absolute; right: 10px; top: 12px; color: var(--brand-600); font-weight: 700; }
 
 .chat-head { display: flex; align-items: center; gap: 10px; padding: 4px 2px 10px; border-bottom: 1px solid var(--border); }
 .chat-head-title { font-size: 14px; font-weight: 650; }

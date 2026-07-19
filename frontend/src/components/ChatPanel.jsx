@@ -1,9 +1,10 @@
-// Discussion — Google-Chat-style. Left: a conversation list (the project-wide
-// "Everyone" channel + 1:1 DMs + named groups, all human members). Right: the
-// selected conversation's thread + composer. Messages may carry an optional
-// `image` (a data-URL); images are downscaled client-side under the 2MB cap.
-// Styling uses shared design tokens/classes.
-import { useEffect, useRef, useState, useCallback } from 'react'
+// Discussion — Google-Chat-style. Left: a list of EVERY conversation you could
+// have — the project-wide "Everyone" channel, a row for every teammate (a DM,
+// empty until you've messaged), and any named groups. A search box filters it;
+// rows sort latest-message-first. Right: the selected thread + composer.
+// Group creation is a lightweight mode: tap people in the same list to add them.
+// Messages may carry an optional downscaled `image` (2MB cap). Shared tokens.
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { avatarColor } from '../ui/avatarColor.js'
 import { getConversations, createConversation, getConvMessages, postConvMessage } from '../lib/chat.js'
 
@@ -51,38 +52,37 @@ const readKey = (pid, cid) => `chat-read-${pid}-${cid}`
 const getRead = (pid, cid) => { try { return Number(localStorage.getItem(readKey(pid, cid)) || 0) } catch { return 0 } }
 const setRead = (pid, cid, ts) => { try { localStorage.setItem(readKey(pid, cid), String(ts)) } catch { /* ignore */ } }
 
-function ConvIcon({ conv }) {
-  if (conv.type === 'everyone') return <span className="conv-icon everyone" aria-hidden>#</span>
-  if (conv.type === 'group') return <span className="conv-icon group" style={{ background: avatarColor(conv.title) }} aria-hidden>{initials(conv.title)}</span>
-  return <span className="conv-icon" style={{ background: avatarColor(conv.title) }} aria-hidden>{initials(conv.title)}</span>
+function ConvIcon({ row }) {
+  if (row.type === 'everyone') return <span className="conv-icon everyone" aria-hidden>#</span>
+  return <span className={`conv-icon ${row.type === 'group' ? 'group' : ''}`} style={{ background: avatarColor(row.title) }} aria-hidden>{initials(row.title)}</span>
 }
 
 export default function ChatPanel({ pid, me, members = [] }) {
   const [convs, setConvs] = useState([])
-  const [selected, setSelected] = useState(null)   // conversation id
+  const [selected, setSelected] = useState(null)
   const [messages, setMessages] = useState([])
   const [text, setText] = useState('')
   const [image, setImage] = useState(null)
   const [error, setError] = useState('')
   const [attaching, setAttaching] = useState(false)
-  const [composing, setComposing] = useState(false)  // new-conversation panel open
-  const [pick, setPick] = useState([])               // selected member ids
+  const [query, setQuery] = useState('')
+  const [groupMode, setGroupMode] = useState(false)
+  const [groupPick, setGroupPick] = useState([])   // user ids
   const [groupName, setGroupName] = useState('')
   const sinceId = useRef(0)
   const logRef = useRef(null)
   const fileRef = useRef(null)
 
-  const others = members.filter((m) => m.user_id !== me?.user_id)
+  const others = useMemo(() => members.filter((m) => m.user_id !== me?.user_id), [members, me])
 
   const loadConvs = useCallback(() => {
     getConversations(pid).then((d) => {
       setConvs(d.conversations)
-      setSelected((s) => s ?? (d.conversations[0]?.id ?? null))
+      setSelected((s) => s ?? (d.conversations.find((c) => c.type === 'everyone')?.id ?? d.conversations[0]?.id ?? null))
     }).catch(() => {})
   }, [pid])
   useEffect(() => { loadConvs(); const iv = setInterval(loadConvs, 4000); return () => clearInterval(iv) }, [loadConvs])
 
-  // Messages for the selected conversation.
   const pollMessages = useCallback(() => {
     if (!selected) return
     getConvMessages(pid, selected, sinceId.current).then((d) => {
@@ -101,8 +101,34 @@ export default function ChatPanel({ pid, me, members = [] }) {
     const iv = setInterval(pollMessages, 3000)
     return () => clearInterval(iv)
   }, [selected, pid, pollMessages])
-
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight }, [messages])
+
+  // Build the full list: Everyone + a row per teammate (real DM or empty
+  // placeholder) + groups. Filter by search, sort latest-first (empties last).
+  const rows = useMemo(() => {
+    const everyone = convs.find((c) => c.type === 'everyone')
+    const groups = convs.filter((c) => c.type === 'group')
+    const dmByUser = new Map()
+    convs.filter((c) => c.type === 'dm').forEach((c) => {
+      const o = c.members.find((m) => m.id !== me?.user_id)
+      if (o) dmByUser.set(o.id, c)
+    })
+    const memberRows = others.map((m) => dmByUser.get(m.user_id) || {
+      id: `new-${m.user_id}`, type: 'dm', title: m.name,
+      members: [{ id: m.user_id, name: m.name }], last: null, newUser: m.user_id,
+    })
+    let all = [...(everyone ? [everyone] : []), ...groups, ...memberRows]
+    const q = query.trim().toLowerCase()
+    if (q) all = all.filter((r) => r.title.toLowerCase().includes(q))
+    const rank = (r) => (r.type === 'everyone' ? 0 : r.last?.ts ? 1 : 2)
+    all.sort((a, b) => {
+      const ra = rank(a), rb = rank(b)
+      if (ra !== rb) return ra - rb
+      if (ra === 1) return (b.last?.ts || 0) - (a.last?.ts || 0)
+      return a.title.localeCompare(b.title)
+    })
+    return all
+  }, [convs, others, query, me])
 
   async function attach(file) {
     if (!file) return
@@ -116,28 +142,27 @@ export default function ChatPanel({ pid, me, members = [] }) {
   async function post(e) {
     e.preventDefault()
     if ((!text.trim() && !image) || !selected) return
-    try {
-      await postConvMessage(pid, selected, { text, image: image || undefined })
-      setText(''); setImage(null); pollMessages()
-    } catch (err) { setError(err.message) }
+    try { await postConvMessage(pid, selected, { text, image: image || undefined }); setText(''); setImage(null); pollMessages() }
+    catch (err) { setError(err.message) }
   }
 
-  const togglePick = (id) => setPick((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))
-  async function startDm() {
-    if (pick.length !== 1) return
-    try {
-      const c = await createConversation(pid, { type: 'dm', member_ids: pick })
-      resetCompose(); loadConvs(); setSelected(c.id)
-    } catch (err) { setError(err.message) }
+  const otherIdOf = (r) => r.newUser ?? r.members.find((m) => m.id !== me?.user_id)?.id
+  const toggleGroupPick = (id) => setGroupPick((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))
+
+  async function openRow(r) {
+    if (groupMode) { if (r.type === 'dm') toggleGroupPick(otherIdOf(r)); return }
+    if (r.newUser) {
+      try { const c = await createConversation(pid, { type: 'dm', member_ids: [r.newUser] }); await loadConvs(); setSelected(c.id) }
+      catch (err) { setError(err.message) }
+    } else setSelected(r.id)
   }
   async function createGroup() {
-    if (!groupName.trim() || pick.length === 0) return
+    if (!groupName.trim() || groupPick.length === 0) return
     try {
-      const c = await createConversation(pid, { type: 'group', name: groupName.trim(), member_ids: pick })
-      resetCompose(); loadConvs(); setSelected(c.id)
+      const c = await createConversation(pid, { type: 'group', name: groupName.trim(), member_ids: groupPick })
+      setGroupMode(false); setGroupPick([]); setGroupName(''); await loadConvs(); setSelected(c.id)
     } catch (err) { setError(err.message) }
   }
-  function resetCompose() { setComposing(false); setPick([]); setGroupName('') }
 
   const active = convs.find((c) => c.id === selected)
 
@@ -147,49 +172,49 @@ export default function ChatPanel({ pid, me, members = [] }) {
       <aside className="conv-list">
         <div className="conv-list-head">
           <span>Messages</span>
-          <button className="btn ghost sm" onClick={() => setComposing((v) => !v)} title="New conversation">{composing ? 'Cancel' : '+ New'}</button>
+          <button className="conv-newgroup" onClick={() => { setGroupMode((v) => !v); setGroupPick([]); setGroupName('') }}>
+            {groupMode ? 'Cancel' : 'New group'}
+          </button>
         </div>
 
-        {composing && (
-          <div className="conv-new">
-            <input className="conv-group-name" placeholder="Group name (optional for DM)"
-                   value={groupName} onChange={(e) => setGroupName(e.target.value)} />
-            <div className="conv-pick">
-              {others.length === 0 && <p className="faint" style={{ margin: 0 }}>No other members yet.</p>}
-              {others.map((m) => (
-                <label key={m.user_id} className={`conv-pick-row ${pick.includes(m.user_id) ? 'on' : ''}`}>
-                  <input type="checkbox" checked={pick.includes(m.user_id)} onChange={() => togglePick(m.user_id)} />
-                  <span className="avatar sm" aria-hidden style={{ background: avatarColor(m.name) }}>{initials(m.name)}</span>
-                  <span>{m.name}</span>
-                </label>
-              ))}
-            </div>
-            <div className="conv-new-actions">
-              <button className="btn sm" disabled={pick.length !== 1 || !!groupName.trim()} onClick={startDm} title="1:1 direct message">Start DM</button>
-              <button className="btn sm" disabled={!groupName.trim() || pick.length === 0} onClick={createGroup}>Create group</button>
-            </div>
+        <div className="conv-search">
+          {groupMode ? (
+            <input autoFocus placeholder="Group name" value={groupName} onChange={(e) => setGroupName(e.target.value)} />
+          ) : (
+            <input placeholder="Search people and groups" value={query} onChange={(e) => setQuery(e.target.value)} />
+          )}
+        </div>
+        {groupMode && (
+          <div className="conv-group-bar">
+            <span className="faint">{groupPick.length} selected · tap people below</span>
+            <button className="btn sm" disabled={!groupName.trim() || groupPick.length === 0} onClick={createGroup}>Create</button>
           </div>
         )}
 
         <div className="conv-items">
-          {convs.map((c) => {
-            const unread = c.last && c.id !== selected && c.last.ts > getRead(pid, c.id)
+          {rows.map((r) => {
+            const picked = groupMode && r.type === 'dm' && groupPick.includes(otherIdOf(r))
+            const disabled = groupMode && r.type !== 'dm'
+            const unread = !groupMode && r.last && r.id !== selected && r.last.ts > getRead(pid, r.id)
             return (
-              <button key={c.id} className={`conv-item ${c.id === selected ? 'on' : ''}`} onClick={() => setSelected(c.id)}>
-                <ConvIcon conv={c} />
+              <button key={r.id} className={`conv-item ${r.id === selected && !groupMode ? 'on' : ''} ${picked ? 'picked' : ''} ${disabled ? 'muted-row' : ''}`}
+                      disabled={disabled} onClick={() => openRow(r)}>
+                <ConvIcon row={r} />
                 <div className="conv-item-main">
                   <div className="conv-item-top">
-                    <span className="conv-item-title">{c.title}{c.type === 'group' && <span className="faint conv-count"> · {c.members.length}</span>}</span>
-                    {c.last && <span className="conv-item-time faint">{relTime(c.last.ts)}</span>}
+                    <span className="conv-item-title">{r.title}{r.type === 'group' && <span className="faint conv-count"> · {r.members.length}</span>}</span>
+                    {r.last && !groupMode && <span className="conv-item-time faint">{relTime(r.last.ts)}</span>}
                   </div>
                   <div className="conv-item-last faint">
-                    {c.last ? <>{c.last.sender.split(/\s+/)[0]}: {c.last.text}</> : 'No messages yet'}
+                    {r.last ? <>{r.last.sender.split(/\s+/)[0]}: {r.last.text}</> : (r.type === 'dm' ? 'No messages yet' : '—')}
                   </div>
                 </div>
+                {picked && <span className="conv-check" aria-hidden>✓</span>}
                 {unread && <span className="conv-unread" aria-label="unread" />}
               </button>
             )
           })}
+          {rows.length === 0 && <p className="faint" style={{ padding: '8px 10px' }}>No matches.</p>}
         </div>
       </aside>
 
@@ -197,7 +222,7 @@ export default function ChatPanel({ pid, me, members = [] }) {
       <section className="chat">
         {active && (
           <div className="chat-head">
-            <ConvIcon conv={active} />
+            <ConvIcon row={active} />
             <div>
               <div className="chat-head-title">{active.title}</div>
               <div className="faint chat-head-sub">
