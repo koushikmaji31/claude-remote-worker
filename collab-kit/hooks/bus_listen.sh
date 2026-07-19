@@ -22,10 +22,12 @@ if [ -n "$out" ]; then
   fi
 fi
 
-# Safety net: never go idle without the background listener running, or bus
-# messages will queue with nothing to wake this session.
-if ! pgrep -f "bus_wait.sh $name" >/dev/null 2>&1; then
+# Safety net: never go idle without a listener running, or bus messages will
+# queue with nothing to wake this session. The persistent listener (bus_stream.sh
+# under Monitor) normally runs the whole session, so this only fires if it died;
+# bus_wait.sh (the run_in_background fallback) also satisfies the check.
+if ! pgrep -f "bus_stream.sh $name" >/dev/null 2>&1 && ! pgrep -f "bus_wait.sh $name" >/dev/null 2>&1; then
   HOOKS_DIR=$(cd "$(dirname "$0")" && pwd)
-  printf '{"decision":"block","reason":"Your bus listener is not running, so incoming bus messages cannot wake you. Start it NOW with the Bash tool (run_in_background=true): bash %s/bus_wait.sh %s — then end your turn."}\n' "$HOOKS_DIR" "$name"
+  printf '{"decision":"block","reason":"Your bus listener is not running, so incoming bus messages cannot wake you. Restart it NOW via the Monitor tool (persistent:true, description '\''bus'\''): bash %s/bus_stream.sh %s — then end your turn."}\n' "$HOOKS_DIR" "$name"
 fi
 exit 0
