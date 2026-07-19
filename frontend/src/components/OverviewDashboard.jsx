@@ -203,23 +203,20 @@ export default function OverviewDashboard({ pid, project }) {
     })),
   ]
 
-  const repoPill = (v, good) => (live ? (good || 'live') : 'link repo')
-  const repoClass = () => (live ? 'lime' : 'warn')
-
   return (
     <div className="ov">
-      {/* Top stat strip — all live */}
+      {/* Top stat strip */}
       <div className="ov-stats">
-        <Stat ready={loaded} value={live ? commits30 : '—'} label="Commits · 30d" pill={repoPill()} pillClass={repoClass()} />
-        <Stat ready={loaded} value={live ? branches : '—'} label="Active branches" pill={repoPill()} pillClass={repoClass()} />
+        <Stat ready={loaded} value={live ? commits30 : '—'} label="Commits · 30d" pill={live ? undefined : 'link repo'} pillClass="warn" />
+        <Stat ready={loaded} value={live ? branches : '—'} label="Active branches" pill={live ? undefined : 'link repo'} pillClass="warn" />
         <Stat ready={loaded} value={live ? openPrs : '—'} label="Open PRs"
-              pill={live ? (openPrs > 6 ? 'review debt' : 'in range') : 'link repo'} pillClass={live ? (openPrs > 6 ? 'warn' : '') : 'warn'} />
+              pill={live ? (openPrs > 6 ? 'review debt' : undefined) : 'link repo'} pillClass="warn" />
         <Stat ready={loaded} value={live ? openIssues : '—'} label="Open issues"
-              pill={live ? (openIssues > 20 ? 'out of range' : 'in range') : 'link repo'} pillClass={live ? (openIssues > 20 ? 'warn' : '') : 'warn'} />
-        <Stat ready={fleet !== null} value={online ?? 0} label="Agents online" pill="live" pillClass="lime" />
-        <Stat ready={fleet !== null} value={working ?? 0} label="Active agents" pill={needsYou > 0 ? `${needsYou} need you` : 'live'} pillClass={needsYou > 0 ? 'warn' : 'lime'} />
-        <Stat value={members} label="Team members" pill="live" pillClass="lime" />
-        <Stat ready={msgCount !== null} value={msgCount ?? 0} label="Messages" pill="live" pillClass="lime" />
+              pill={live ? (openIssues > 20 ? 'out of range' : undefined) : 'link repo'} pillClass="warn" />
+        <Stat ready={fleet !== null} value={online ?? 0} label="Agents online" />
+        <Stat ready={fleet !== null} value={working ?? 0} label="Active agents" pill={needsYou > 0 ? `${needsYou} need you` : undefined} pillClass="warn" />
+        <Stat value={members} label="Team members" />
+        <Stat ready={msgCount !== null} value={msgCount ?? 0} label="Messages" />
       </div>
 
       {/* Commit activity timeline (per week) */}
@@ -272,7 +269,7 @@ export default function OverviewDashboard({ pid, project }) {
 
       {/* Live metric tiles */}
       <div className="ov-section-head">
-        <h3>Live metrics</h3>
+        <h3>Metrics</h3>
         <p className="faint">Pulled straight from the repo, the bus, and the board.</p>
       </div>
       <div className="ov-tiles">
