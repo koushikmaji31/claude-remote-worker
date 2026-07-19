@@ -48,3 +48,17 @@ to CONTINUE that conversation (`claude --resume`). Store it per-conversation in 
 ## Auth note
 Claude Code uses `~/.claude/.credentials.json` (your subscription login) — no separate API
 key needed. The VPS needs the same credentials; tokens refresh, so keep them in sync.
+
+## Landing-page sign-in (email/password + Google)
+Users register/sign in on the landing page with **email + password** (passwords are stored as
+salted PBKDF2-HMAC-SHA256, never plaintext) or with **Sign in with Google**.
+
+To enable the Google button, add your Google OAuth **Web** client ID to `.env`:
+
+    GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+
+The frontend fetches it at runtime from `GET /api/config`, so no rebuild is needed — set it and
+restart. When unset, the Google button is hidden and email/password still works. In the Google
+Cloud console, add your origin (e.g. `https://huntjob.space`) to the client's **Authorized
+JavaScript origins**. The access token is verified server-side against Google's userinfo endpoint
+before we mint our own bearer token.

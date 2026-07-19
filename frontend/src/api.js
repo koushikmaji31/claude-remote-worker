@@ -2,9 +2,9 @@ export function getToken() {
   return localStorage.getItem('token')
 }
 
-export function setAuth({ token, user_id, name, email }) {
+export function setAuth({ token, user_id, name, email, picture }) {
   localStorage.setItem('token', token)
-  localStorage.setItem('user', JSON.stringify({ user_id, name, email }))
+  localStorage.setItem('user', JSON.stringify({ user_id, name, email, picture }))
 }
 
 export function getUser() {

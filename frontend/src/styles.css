@@ -470,6 +470,25 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
   transition: background 0.15s, color 0.15s;
 }
 .auth-tab.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
+
+/* "Continue with Google" button + the "or" divider above the email form */
+.gauth-btn {
+  display: flex; align-items: center; justify-content: center; gap: var(--sp-2);
+  width: 100%; padding: 10px 14px; border: 1px solid var(--border);
+  border-radius: var(--r-md); background: var(--surface); color: var(--text);
+  font: inherit; font-weight: 550; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.gauth-btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--text-faint); }
+.gauth-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.gauth-ico { flex: none; }
+.auth-divider {
+  display: flex; align-items: center; gap: var(--sp-3);
+  margin: var(--sp-3) 0; color: var(--text-faint); font-size: 12px;
+}
+.auth-divider::before, .auth-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
 .invite-card { border-color: var(--brand-500); }
 
 /* ---------- Group join (per-project Claude bus command) ---------- */

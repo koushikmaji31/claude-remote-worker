@@ -1,4 +1,5 @@
 """Team Collab Platform backend — see docs/API_CONTRACT.md (v1)."""
+import hashlib
 import json
 import os
 import secrets
@@ -6,6 +7,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -268,6 +270,16 @@ def init_db():
     mcols = {r["name"] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
     if "can_manage" not in mcols:
         conn.execute("ALTER TABLE members ADD COLUMN can_manage INTEGER NOT NULL DEFAULT 0")
+    # Auth: users originally had only (name, email, token) — passwordless. Add
+    # password_hash (PBKDF2-SHA256, salted) for email/password auth, plus Google
+    # sign-in fields. Legacy rows keep NULL password_hash and provider 'legacy'.
+    ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    for col, ddl in (("password_hash", "password_hash TEXT"),
+                     ("auth_provider", "auth_provider TEXT NOT NULL DEFAULT 'legacy'"),
+                     ("google_sub", "google_sub TEXT"),
+                     ("picture", "picture TEXT")):
+        if col not in ucols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {ddl}")
     # provider: which git host an identity / repo-link / oauth-handshake belongs to.
     # Existing rows predate GitLab support, so they default to 'github'.
     for table in ("gh_identities", "repo_links", "gh_oauth_states"):
@@ -343,30 +355,91 @@ def invite_link(code: str) -> str:
 
 
 # ---------- Auth ----------
+# Passwords are stored as salted PBKDF2-HMAC-SHA256, formatted
+# "pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>" so the parameters travel
+# with the hash and can be upgraded later without a schema change.
+PBKDF2_ITERATIONS = 240_000
+GOOGLE_USERINFO = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, stored: Optional[str]) -> bool:
+    if not stored:
+        return False
+    try:
+        scheme, iters, salt_hex, hash_hex = stored.split("$")
+        if scheme != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_hex), int(iters))
+    except (ValueError, TypeError):
+        return False
+    return secrets.compare_digest(dk.hex(), hash_hex)
+
+
+def _verify_google_token(access_token: str) -> dict:
+    """Validate a Google OAuth access token server-side and return the profile.
+    Mirrors the huntjob MCP auth path: hit Google's userinfo endpoint with the
+    token; a valid token yields the verified {sub, email, name, picture}."""
+    req = urllib.request.Request(
+        GOOGLE_USERINFO, headers={"Authorization": f"Bearer {access_token}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except Exception:
+        raise HTTPException(401, "Could not verify Google sign-in")
+
+
+def _auth_payload(row) -> dict:
+    return {"user_id": row["id"], "name": row["name"], "email": row["email"],
+            "picture": row["picture"], "token": row["token"]}
+
 
 class RegisterIn(BaseModel):
     name: str
     email: str
+    password: str
 
 
 class LoginIn(BaseModel):
     email: str
+    password: str
+
+
+class GoogleAuthIn(BaseModel):
+    access_token: str
+
+
+@app.get("/api/config")
+def public_config():
+    """Public client config. google_client_id enables the "Continue with Google"
+    button; when empty the UI hides Google auth and offers email/password only."""
+    return {"google_client_id": os.environ.get("GOOGLE_CLIENT_ID", "").strip()}
 
 
 @app.post("/api/register")
 def register(body: RegisterIn):
+    if len(body.password or "") < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
     conn = db()
     try:
         token = secrets.token_hex(16)
         try:
             cur = conn.execute(
-                "INSERT INTO users(name, email, token) VALUES(?,?,?)",
-                (body.name, body.email, token),
+                "INSERT INTO users(name, email, token, password_hash, auth_provider) "
+                "VALUES(?,?,?,?,'password')",
+                (body.name, body.email, token, hash_password(body.password)),
             )
             conn.commit()
         except sqlite3.IntegrityError:
             raise HTTPException(409, "Email already registered")
-        return {"user_id": cur.lastrowid, "name": body.name, "email": body.email, "token": token}
+        row = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+        return _auth_payload(row)
     finally:
         conn.close()
 
@@ -376,16 +449,62 @@ def login(body: LoginIn):
     conn = db()
     try:
         row = conn.execute("SELECT * FROM users WHERE email=?", (body.email,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Unknown email")
-        return {"user_id": row["id"], "name": row["name"], "email": row["email"], "token": row["token"]}
+        # Uniform error for unknown-email vs bad-password so we don't leak which
+        # emails are registered.
+        if not row or not verify_password(body.password, row["password_hash"]):
+            if row and row["auth_provider"] == "google":
+                raise HTTPException(401, "This account uses Google sign-in")
+            raise HTTPException(401, "Invalid email or password")
+        return _auth_payload(row)
+    finally:
+        conn.close()
+
+
+@app.post("/api/auth/google")
+def auth_google(body: GoogleAuthIn):
+    """Sign in / sign up with Google. Verifies the access token with Google,
+    then upserts the user (matched by google_sub, falling back to email) and
+    returns our own bearer token — reusing the existing token auth model."""
+    info = _verify_google_token(body.access_token)
+    sub = info.get("sub")
+    email = info.get("email")
+    if not sub or not email:
+        raise HTTPException(401, "Google profile missing sub/email")
+    name = info.get("name") or email.split("@")[0]
+    picture = info.get("picture")
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM users WHERE google_sub=? OR email=?", (sub, email)
+        ).fetchone()
+        if row:
+            # Link Google to an existing account and refresh profile fields.
+            conn.execute(
+                "UPDATE users SET google_sub=?, picture=?, auth_provider="
+                "CASE WHEN password_hash IS NULL THEN 'google' ELSE auth_provider END "
+                "WHERE id=?",
+                (sub, picture, row["id"]),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM users WHERE id=?", (row["id"],)).fetchone()
+        else:
+            token = secrets.token_hex(16)
+            cur = conn.execute(
+                "INSERT INTO users(name, email, token, auth_provider, google_sub, picture) "
+                "VALUES(?,?,?,'google',?,?)",
+                (name, email, token, sub, picture),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+        return _auth_payload(row)
     finally:
         conn.close()
 
 
 @app.get("/api/me")
 def me(user=Depends(current_user)):
-    return {"user_id": user["id"], "name": user["name"], "email": user["email"]}
+    return {"user_id": user["id"], "name": user["name"], "email": user["email"],
+            "picture": user["picture"]}
 
 
 # ---------- Projects ----------
