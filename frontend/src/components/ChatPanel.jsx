@@ -291,7 +291,12 @@ export default function ChatPanel({ pid, me, members = [] }) {
             onPaste={onPaste}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) post(e) }}
           />
-          <button type="submit" className="btn sm chat-send" disabled={(!text.trim() && !image) || attaching || !selected}>Post</button>
+          <button type="submit" className="chat-send" aria-label="Send" title="Send  (Cmd/Ctrl + Enter)"
+                  disabled={(!text.trim() && !image) || attaching || !selected}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" />
+            </svg>
+          </button>
         </form>
       </section>
     </div>
