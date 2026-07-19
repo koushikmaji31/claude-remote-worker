@@ -3,11 +3,13 @@ import hashlib
 import json
 import os
 import secrets
+import smtplib
 import sqlite3
 import subprocess
 import threading
 import time
 import urllib.request
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Optional
 
@@ -114,6 +116,13 @@ def init_db():
             conversation_id INTEGER REFERENCES conversations(id),
             user_id INTEGER REFERENCES users(id),
             PRIMARY KEY(conversation_id, user_id)
+        );
+        -- One-time password-reset tokens (emailed link). Expire after 1 hour.
+        CREATE TABLE IF NOT EXISTS password_resets(
+            token TEXT PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
+            expires_at REAL NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0
         );
         -- GitHub identity: one linked GitHub account per platform user (Phase 1, PAT-based).
         -- token_enc is sealed at rest (see _seal/_unseal). auth_kind future-proofs OAuth/App.
@@ -531,6 +540,96 @@ def set_account_password(body: PasswordSetIn, user=Depends(current_user)):
                      (hash_password(body.new_password), provider, user["id"]))
         conn.commit()
         return {"ok": True, "auth_provider": provider, "has_password": True}
+    finally:
+        conn.close()
+
+
+def _send_email(to_addr: str, subject: str, body: str) -> bool:
+    """Send a plain-text email via SMTP (env-configured). Returns False if SMTP
+    isn't configured or the send fails — callers must not depend on delivery."""
+    host = os.environ.get("SMTP_HOST", "").strip()
+    if not host:
+        return False
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    user = os.environ.get("SMTP_USER", "").strip()
+    pw = os.environ.get("SMTP_PASS", "")
+    sender = (os.environ.get("SMTP_FROM", "").strip() or user or "no-reply@localhost")
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_addr
+    msg.set_content(body)
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=15) as s:
+                if user:
+                    s.login(user, pw)
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as s:
+                s.starttls()
+                if user:
+                    s.login(user, pw)
+                s.send_message(msg)
+        return True
+    except Exception as e:  # noqa: BLE001 — never surface SMTP errors to the client
+        print(f"[email] send to {to_addr} failed: {e}", flush=True)
+        return False
+
+
+class ForgotIn(BaseModel):
+    email: str
+
+
+class ResetIn(BaseModel):
+    token: str
+    new_password: str
+
+
+@app.post("/api/password/forgot")
+def password_forgot(body: ForgotIn):
+    """Email a one-time reset link. Always returns ok (no account enumeration)."""
+    conn = db()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE email=?", (body.email.strip(),)).fetchone()
+        if row:
+            token = secrets.token_urlsafe(32)
+            conn.execute("INSERT INTO password_resets(token, user_id, expires_at, used) VALUES(?,?,?,0)",
+                         (token, row["id"], time.time() + 3600))
+            conn.commit()
+            base = (os.environ.get("PUBLIC_BASE_URL", "").strip() or "http://127.0.0.1:8900").rstrip("/")
+            link = f"{base}/?reset={token}"
+            sent = _send_email(
+                row["email"], "Reset your Team Collab password",
+                f"Hi {row['name']},\n\nUse this link to reset your password (valid for 1 hour):\n{link}\n\n"
+                "If you didn't request this, you can ignore this email.")
+            if not sent:
+                # SMTP unconfigured/failed: log the link so an admin can deliver it
+                # manually during setup. Never returned to the client.
+                print(f"[password reset] link for {row['email']}: {link}", flush=True)
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/password/reset")
+def password_reset(body: ResetIn):
+    if len(body.new_password or "") < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    conn = db()
+    try:
+        r = conn.execute("SELECT * FROM password_resets WHERE token=?", (body.token,)).fetchone()
+        if not r or r["used"] or r["expires_at"] < time.time():
+            raise HTTPException(400, "This reset link is invalid or has expired")
+        urow = conn.execute("SELECT * FROM users WHERE id=?", (r["user_id"],)).fetchone()
+        if not urow:
+            raise HTTPException(400, "This reset link is invalid or has expired")
+        provider = "both" if urow["auth_provider"] == "google" else (urow["auth_provider"] or "password")
+        conn.execute("UPDATE users SET password_hash=?, auth_provider=? WHERE id=?",
+                     (hash_password(body.new_password), provider, urow["id"]))
+        conn.execute("UPDATE password_resets SET used=1 WHERE token=?", (body.token,))
+        conn.commit()
+        return {"ok": True}
     finally:
         conn.close()
 

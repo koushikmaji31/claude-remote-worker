@@ -58,6 +58,7 @@ function AuthForm({ onAuthed }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [googleClientId, setGoogleClientId] = useState('')
+  const [forgotSent, setForgotSent] = useState(false)
   const [gisReady, setGisReady] = useState(false)
   const tokenClient = useRef(null)
 
@@ -123,6 +124,14 @@ function AuthForm({ onAuthed }) {
     tokenClient.current.requestAccessToken()
   }
 
+  async function forgotPassword() {
+    if (!email.trim()) { setError('Enter your email above, then tap "Forgot password?"'); return }
+    setError('')
+    try { await api('/api/password/forgot', { auth: false, method: 'POST', body: { email: email.trim() } }) }
+    catch { /* never reveal whether the email exists */ }
+    setForgotSent(true)
+  }
+
   return (
     <div className="card auth-card">
       <div className="auth-tabs">
@@ -154,6 +163,13 @@ function AuthForm({ onAuthed }) {
                  autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
                  minLength={8} required />
         </label>
+        {mode === 'login' && (
+          <div className="auth-forgot">
+            {forgotSent
+              ? <span className="faint">If that email is registered, a reset link is on its way.</span>
+              : <button type="button" className="linkish" onClick={forgotPassword}>Forgot password?</button>}
+          </div>
+        )}
         {error && <div className="alert error">{error}</div>}
         <button className="btn block" type="submit" disabled={busy}>
           {busy ? 'Please wait…' : mode === 'register' ? 'Create account' : 'Sign in'}
@@ -247,6 +263,54 @@ function TopNav({ authed, user, onLogout }) {
   )
 }
 
+// Reset-password card, reached from the emailed link (?reset=<token>).
+function ResetPassword({ token, onDone }) {
+  const [pw, setPw] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState(false)
+
+  async function submit(e) {
+    e.preventDefault()
+    setError('')
+    if (pw.length < 8) return setError('Password must be at least 8 characters')
+    if (pw !== confirm) return setError('Passwords do not match')
+    setBusy(true)
+    try { await api('/api/password/reset', { auth: false, method: 'POST', body: { token, new_password: pw } }); setDone(true) }
+    catch (err) { setError(err.message) } finally { setBusy(false) }
+  }
+
+  if (done) {
+    return (
+      <div className="card auth-card">
+        <h2 style={{ marginTop: 0 }}>Password updated</h2>
+        <p className="muted">You can now sign in with your new password.</p>
+        <button className="btn block" onClick={onDone}>Go to sign in</button>
+      </div>
+    )
+  }
+  return (
+    <div className="card auth-card">
+      <h2 style={{ marginTop: 0 }}>Choose a new password</h2>
+      <form onSubmit={submit} className="stack-3">
+        <label className="field">
+          <span className="label">New password</span>
+          <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} minLength={8}
+                 autoComplete="new-password" placeholder="At least 8 characters" required />
+        </label>
+        <label className="field">
+          <span className="label">Confirm new password</span>
+          <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} minLength={8}
+                 autoComplete="new-password" required />
+        </label>
+        {error && <div className="alert error">{error}</div>}
+        <button className="btn block" type="submit" disabled={busy || !pw || !confirm}>{busy ? 'Saving…' : 'Reset password'}</button>
+      </form>
+    </div>
+  )
+}
+
 export default function Landing() {
   const navigate = useNavigate()
   const [params] = useSearchParams()
@@ -286,6 +350,16 @@ export default function Landing() {
     clearAuth()
     setAuthed(false)
     setProjects([])
+  }
+
+  // A reset link (?reset=<token>) short-circuits to a focused reset card.
+  const resetToken = params.get('reset')
+  if (resetToken) {
+    return (
+      <div className="app-fallback">
+        <ResetPassword token={resetToken} onDone={() => navigate('/')} />
+      </div>
+    )
   }
 
   return (
