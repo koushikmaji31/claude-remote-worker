@@ -33,10 +33,10 @@ function initials(name = '') {
 const LOGOS = ['Apple', 'Meta', 'Siemens', 'Disney+', 'Adobe', 'Mercedes']
 
 const TESTIMONIALS = [
-  { by: '@ada', text: 'Mark my words. The next big team will ship on Team Collab — and it might be mine.' },
-  { by: '@lin', text: 'I have been using Team Collab for a while now and it is so much easier than juggling five tabs. Fast too!' },
-  { by: '@sven', text: 'Slack + a git viewer once led the way, but this is the leader now. Well engineered, more intuitive, faster.' },
-  { by: '@mira', text: 'Over the holidays I moved my whole squad onto Team Collab to keep our reviews in one place.' },
+  { by: '@ada', text: 'We went from three AI agents stepping on each other to a clean fleet. prodm is how AI-native teams will run.' },
+  { by: '@lin', text: 'I can finally see what every agent is doing and step in before it ships something wrong. prodm replaced five tabs.' },
+  { by: '@sven', text: 'Slack + Jira + a git viewer used to be the stack. prodm folds it into one and adds the agent layer none of them have.' },
+  { by: '@mira', text: 'Moved my whole squad onto prodm to keep humans and agents reviewing in one place. Never going back.' },
 ]
 
 function GoogleMark() {
@@ -46,6 +46,17 @@ function GoogleMark() {
       <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.1 29.6 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
       <path fill="#4CAF50" d="M24 44c5.2 0 10-2 13.6-5.2l-6.3-5.3C29.2 35 26.7 36 24 36c-5.3 0-9.7-3.1-11.3-7.6l-6.5 5C9.6 39.6 16.2 44 24 44z" />
       <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4 5.5l6.3 5.3C41.4 36 44 30.6 44 24c0-1.3-.1-2.3-.4-3.5z" />
+    </svg>
+  )
+}
+
+// prodm mark — a bold double-chevron (echoes the logo). Uses currentColor so it
+// adapts to theme. Swap /public/prodm-mark.svg for the exact brand file anytime.
+function ProdmMark({ size = 22 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden>
+      <path d="M12 11 L26 24 L12 37" stroke="currentColor" strokeWidth="7.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M25 11 L39 24 L25 37" stroke="currentColor" strokeWidth="7.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
@@ -233,9 +244,9 @@ function TopNav({ authed, user, onLogout }) {
   return (
     <nav className="ag-nav">
       <div className="ag-nav-inner">
-        <div className="row" style={{ gap: 10 }}>
-          <div className="brand-mark">TC</div>
-          <span className="ag-wordmark">Team&nbsp;Collab</span>
+        <div className="row" style={{ gap: 9 }}>
+          <span className="brand-mark"><ProdmMark size={20} /></span>
+          <span className="ag-wordmark">prodm</span>
         </div>
         {!authed && (
           <div className="ag-nav-links">
@@ -371,26 +382,29 @@ export default function Landing() {
           <section className="ag-hero">
             <div className="hero-glow" aria-hidden />
             <div className="ag-hero-inner">
-              <div className="ag-eyebrow">Projects · Members · Chat · Git</div>
+              <div className="ag-eyebrow">The coordination layer for AI-native engineering</div>
               <h1 className="ag-hero-title">
-                Where your team ships <span className="text-gradient">together</span><span className="ag-cursor" aria-hidden />
+                Ship with a fleet of <span className="text-gradient">AI agents</span>,<br />
+                without the chaos<span className="ag-cursor" aria-hidden />
               </h1>
               <p className="ag-hero-sub">
-                Create a project, invite your teammates, chat in real time, and review git
-                branches and diffs — all in one private, secure place.
+                prodm keeps your humans and AI coding agents in sync — projects, chat, git and a
+                live fleet where agents claim files, share diffs, and ask for approval before they
+                collide. One place to run the whole team, machine and human.
               </p>
               <div className="ag-hero-cta" id="get-started">
-                <a className="btn pill lg" href="#auth">+ Get started</a>
+                <a className="btn pill lg" href="#auth">Start free</a>
                 <a className="btn secondary pill lg" href="#features">See how it works</a>
               </div>
+              <div className="ag-hero-note mono">prodm.dev · self-hostable · tokens encrypted at rest</div>
             </div>
           </section>
 
           <section className="ag-features" id="features">
             {[
-              ['Real-time chat', 'Talk to your team inline, no context switching.'],
-              ['Git diffs & branches', 'Review branches and unified diffs in the browser.'],
-              ['Instant invites', 'Share one link and your teammates are in.'],
+              ['Agent fleet, one glance', 'See every agent and teammate live — status, current task, tokens, and the files they are touching.'],
+              ['No more collisions', 'Agents claim files and share diffs over the bus, so parallel work reconciles instead of clobbering.'],
+              ['Humans stay in control', 'Approval gates, a Jira-style board, and git review keep people in the loop on what the agents ship.'],
             ].map(([t, d]) => (
               <div className="ag-feature" key={t}>
                 <span className="check" aria-hidden>
