@@ -613,6 +613,14 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
 .pf-section-title { font-size: 13px; font-weight: 650; }
 .pf-ok { font-size: 12.5px; color: var(--success); }
 
+/* Verify-email banner in the dashboard */
+.verify-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: var(--sp-4);
+  background: var(--warning-soft); border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  border-radius: var(--r-md); font-size: 13px; color: var(--text);
+}
+
 /* Forgot-password link under the login password field */
 .auth-forgot { text-align: right; margin-top: -4px; }
 .linkish { background: none; border: none; color: var(--brand-600); font: inherit; font-size: 12.5px; cursor: pointer; padding: 0; }

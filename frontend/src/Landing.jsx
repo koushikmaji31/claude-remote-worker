@@ -317,6 +317,24 @@ function ResetPassword({ token, onDone }) {
   )
 }
 
+// Email-verification card, reached from the emailed link (?verify=<token>).
+function VerifyEmail({ token, onDone }) {
+  const [state, setState] = useState('working') // working | ok | error
+  const [msg, setMsg] = useState('')
+  useEffect(() => {
+    api('/api/email/verify', { auth: false, method: 'POST', body: { token } })
+      .then(() => setState('ok'))
+      .catch((e) => { setState('error'); setMsg(e.message) })
+  }, [token])
+  return (
+    <div className="card auth-card">
+      {state === 'working' && <><h2 style={{ marginTop: 0 }}>Verifying…</h2><p className="muted">Confirming your email address.</p></>}
+      {state === 'ok' && <><h2 style={{ marginTop: 0 }}>Email verified</h2><p className="muted">Your email is confirmed — you're all set.</p><button className="btn block" onClick={onDone}>Continue</button></>}
+      {state === 'error' && <><h2 style={{ marginTop: 0 }}>Link invalid</h2><p className="muted">{msg || 'This verification link is invalid or has expired.'}</p><button className="btn block" onClick={onDone}>Go to sign in</button></>}
+    </div>
+  )
+}
+
 export default function Landing() {
   const navigate = useNavigate()
   const [params] = useSearchParams()
@@ -339,6 +357,15 @@ export default function Landing() {
   useEffect(() => {
     if (authed) loadProjects()
   }, [authed, loadProjects])
+
+  // Nudge to verify email (banner in the dashboard). Verification is optional
+  // server-side, so this is a reminder, not a gate.
+  const [emailVerified, setEmailVerified] = useState(true)
+  const [verifyResent, setVerifyResent] = useState(false)
+  useEffect(() => {
+    if (!authed) return
+    api('/api/me').then((m) => setEmailVerified(m.email_verified !== false)).catch(() => {})
+  }, [authed])
 
   async function createProject(e) {
     e.preventDefault()
@@ -364,6 +391,15 @@ export default function Landing() {
     return (
       <div className="app-fallback">
         <ResetPassword token={resetToken} onDone={() => navigate('/')} />
+      </div>
+    )
+  }
+  // An email-verification link (?verify=<token>) does the same.
+  const verifyToken = params.get('verify')
+  if (verifyToken) {
+    return (
+      <div className="app-fallback">
+        <VerifyEmail token={verifyToken} onDone={() => navigate('/')} />
       </div>
     )
   }
@@ -449,6 +485,15 @@ export default function Landing() {
 
         {authed && (
           <div className="dash">
+            {!emailVerified && (
+              <div className="verify-banner">
+                <span>Verify your email to secure your account and get notifications.</span>
+                <button className="btn ghost sm" disabled={verifyResent}
+                        onClick={async () => { try { await api('/api/email/resend', { method: 'POST' }) } catch { /* ignore */ } setVerifyResent(true) }}>
+                  {verifyResent ? 'Sent — check your inbox' : 'Resend email'}
+                </button>
+              </div>
+            )}
             <div className="dash-head">
               <div>
                 <h1 className="dash-title">Projects</h1>

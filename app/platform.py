@@ -71,7 +71,8 @@ app.add_middleware(
 _CSP = (
     "default-src 'self'; "
     "script-src 'self' https://accounts.google.com https://apis.google.com; "
-    "style-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
     "img-src 'self' data: https:; "
     "connect-src 'self' https://oauth2.googleapis.com https://www.googleapis.com https://accounts.google.com; "
     "frame-src https://accounts.google.com; "
