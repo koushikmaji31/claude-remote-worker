@@ -773,15 +773,36 @@ def set_account_password(body: PasswordSetIn, request: Request, user=Depends(cur
 
 
 def _send_email(to_addr: str, subject: str, body: str) -> bool:
-    """Send a plain-text email via SMTP (env-configured). Returns False if SMTP
-    isn't configured or the send fails — callers must not depend on delivery."""
+    """Deliver a plain-text email. Prefers the Resend HTTP API (RESEND_API_KEY),
+    which works where outbound SMTP is blocked (some VPS hosts, or a dest-side IP
+    block), then falls back to SMTP. Returns False if neither is configured or
+    both fail; callers log the link as a backstop and never depend on delivery."""
+    sender = (os.environ.get("RESEND_FROM", "").strip()
+              or os.environ.get("SMTP_FROM", "").strip()
+              or "prodm <noreply@prodm.dev>")
+    # 1) Resend HTTP API over HTTPS (:443) — unaffected by SMTP port/IP blocking.
+    resend_key = os.environ.get("RESEND_API_KEY", "").strip()
+    if resend_key:
+        try:
+            payload = json.dumps({"from": sender, "to": [to_addr],
+                                  "subject": subject, "text": body}).encode()
+            req = urllib.request.Request(
+                "https://api.resend.com/emails", data=payload, method="POST",
+                headers={"Authorization": f"Bearer {resend_key}",
+                         "Content-Type": "application/json", "User-Agent": "prodm/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                if 200 <= r.status < 300:
+                    return True
+                print(f"[email] resend non-2xx {r.status} to {to_addr}", flush=True)
+        except Exception as e:  # noqa: BLE001 — fall through to SMTP
+            print(f"[email] resend send to {to_addr} failed: {e}", flush=True)
+    # 2) SMTP fallback (env-configured).
     host = os.environ.get("SMTP_HOST", "").strip()
     if not host:
         return False
     port = int(os.environ.get("SMTP_PORT", "587"))
     user = os.environ.get("SMTP_USER", "").strip()
     pw = os.environ.get("SMTP_PASS", "")
-    sender = (os.environ.get("SMTP_FROM", "").strip() or user or "no-reply@localhost")
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = sender
