@@ -50,15 +50,10 @@ function GoogleMark() {
   )
 }
 
-// prodm mark — a bold double-chevron (echoes the logo). Uses currentColor so it
-// adapts to theme. Swap /public/prodm-mark.svg for the exact brand file anytime.
+// prodm mark — the real logo (transparent PNG). It's black; .prodm-logo-img
+// inverts it to white in dark theme so it reads on either background.
 function ProdmMark({ size = 22 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" aria-hidden>
-      <path d="M12 11 L26 24 L12 37" stroke="currentColor" strokeWidth="7.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M25 11 L39 24 L25 37" stroke="currentColor" strokeWidth="7.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
+  return <img className="prodm-logo-img" src="/prodm-logo.png" alt="prodm" style={{ height: size }} />
 }
 
 function AuthForm({ onAuthed }) {

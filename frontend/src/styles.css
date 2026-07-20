@@ -362,6 +362,10 @@ hr { border: none; border-top: 1px solid var(--border); margin: var(--sp-4) 0; }
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--text); line-height: 0;
 }
+/* Logo PNG is black; invert to white in the dark theme (default) so it reads on
+   the near-black nav; keep it black in light theme. */
+.prodm-logo-img { width: auto; display: block; filter: invert(1); }
+:root[data-theme='light'] .prodm-logo-img { filter: none; }
 /* ---------- agno-style page shell ---------- */
 .ag-page { min-height: 100%; }
 /* faint vertical grid rails, agno-style */
