@@ -89,6 +89,23 @@ Set these in `.env` so reset links are emailed (otherwise the link is only logge
     SMTP_PASS=xxxxxxxx
     SMTP_FROM=no-reply@your-domain                 # defaults to SMTP_USER if unset
 
+### Security headers
+Every response carries `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+`Permissions-Policy`, a **Content-Security-Policy** (tuned for the SPA + Google sign-in), and
+`Strict-Transport-Security` (only over HTTPS). If the CSP blocks a resource during development, set
+`CSP_DISABLED=1` to turn it off while you adjust it — always re-check in a browser after changes.
+
+### Email verification
+Password sign-ups start unverified and receive a confirmation link (`/?verify=<token>`); Google
+sign-ups are verified automatically. Endpoints: `POST /api/email/verify` (confirm a token),
+`POST /api/email/resend` (signed-in, rate-limited). `GET /api/me` returns `email_verified`.
+Set `REQUIRE_EMAIL_VERIFICATION=1` to block unverified **password** logins (off by default so no one
+is locked out before the front-end verify UX is wired up). Needs SMTP configured to actually deliver.
+
+> Front-end TODO: the landing page must read `?verify=<token>` from the URL and POST it to
+> `/api/email/verify` (mirrors the existing `?reset=` handling), plus a "verify your email" banner
+> driven by `me.email_verified`.
+
 ### One-time note on upgrade
 Switching to session-based auth invalidates the old per-user static tokens, so everyone who was
 signed in must sign in again once after this deploys.

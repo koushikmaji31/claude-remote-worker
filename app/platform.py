@@ -65,6 +65,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Content-Security-Policy tuned for this SPA + "Sign in with Google". If it ever
+# blocks a legitimate resource during development, set CSP_DISABLED=1 to turn it
+# off while you adjust the policy (verify in a browser after any change).
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' https://accounts.google.com https://apis.google.com; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: https:; "
+    "connect-src 'self' https://oauth2.googleapis.com https://www.googleapis.com https://accounts.google.com; "
+    "frame-src https://accounts.google.com; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "object-src 'none'"
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    # HSTS only over HTTPS (honors the reverse proxy's X-Forwarded-Proto).
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    if proto == "https":
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+    if not os.environ.get("CSP_DISABLED"):
+        resp.headers.setdefault("Content-Security-Policy", _CSP)
+    return resp
+
 
 def db():
     conn = sqlite3.connect(DB_PATH)
@@ -123,6 +155,14 @@ def init_db():
         -- 'token' stores the SHA-256 hash of the raw token, never the raw value,
         -- so a DB leak can't be used to reset accounts.
         CREATE TABLE IF NOT EXISTS password_resets(
+            token TEXT PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id),
+            expires_at REAL NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0
+        );
+        -- One-time email-verification tokens (emailed link on password signup).
+        -- 'token' stores the SHA-256 hash of the raw token. Expire after 24h.
+        CREATE TABLE IF NOT EXISTS email_verifications(
             token TEXT PRIMARY KEY,
             user_id INTEGER REFERENCES users(id),
             expires_at REAL NOT NULL,
@@ -582,6 +622,12 @@ def register(body: RegisterIn, request: Request):
         row = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
         token = issue_session(conn, row["id"])
         conn.commit()
+        # Fire off a verification email (best-effort; never blocks signup).
+        try:
+            send_verification_email(conn, row)
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            print(f"[email verify] could not send on signup: {e}", flush=True)
         return _auth_payload(row, token)
     finally:
         conn.close()
@@ -602,7 +648,13 @@ def login(body: LoginIn, request: Request):
         if not row or not ok:
             if row and row["auth_provider"] == "google":
                 raise HTTPException(401, "This account uses Google sign-in")
-            raise HTTPException(401, "Invalid email or password")
+            raise HTTPException(401, "Email and password combination does not exist")
+        # Optional gate: block unverified password accounts when the operator
+        # opts in (REQUIRE_EMAIL_VERIFICATION=1). Off by default so no one is
+        # locked out before the email-verify UX is wired up end-to-end.
+        if (os.environ.get("REQUIRE_EMAIL_VERIFICATION") == "1"
+                and row["auth_provider"] == "password" and not row["email_verified"]):
+            raise HTTPException(403, "Please verify your email address first — check your inbox for the verification link.")
         token = issue_session(conn, row["id"])
         conn.commit()
         return _auth_payload(row, token)
@@ -752,6 +804,27 @@ def _send_email(to_addr: str, subject: str, body: str) -> bool:
         return False
 
 
+EMAIL_VERIFY_TTL = 24 * 3600
+
+
+def send_verification_email(conn, user_row) -> None:
+    """Create a one-time verification token and email the confirm link. If SMTP
+    isn't configured the link is logged server-side (same fallback as reset)."""
+    raw = secrets.token_urlsafe(32)
+    conn.execute(
+        "INSERT INTO email_verifications(token, user_id, expires_at, used) VALUES(?,?,?,0)",
+        (_hash_token(raw), user_row["id"], time.time() + EMAIL_VERIFY_TTL))
+    base = (os.environ.get("PUBLIC_BASE_URL", "").strip() or "http://127.0.0.1:8900").rstrip("/")
+    link = f"{base}/?verify={raw}"
+    sent = _send_email(
+        user_row["email"], "Verify your prodm email",
+        f"Hi {user_row['name']},\n\nConfirm your email address to finish setting up your "
+        f"account (valid for 24 hours):\n{link}\n\n"
+        "If you didn't create this account, you can ignore this email.")
+    if not sent:
+        print(f"[email verify] link for {user_row['email']}: {link}", flush=True)
+
+
 class ForgotIn(BaseModel):
     email: str
 
@@ -806,12 +879,52 @@ def password_reset(body: ResetIn, request: Request):
         if not urow:
             raise HTTPException(400, "This reset link is invalid or has expired")
         provider = "both" if urow["auth_provider"] == "google" else (urow["auth_provider"] or "password")
-        conn.execute("UPDATE users SET password_hash=?, auth_provider=? WHERE id=?",
+        # Completing a reset proves the user controls the inbox, so mark verified.
+        conn.execute("UPDATE users SET password_hash=?, auth_provider=?, email_verified=1 WHERE id=?",
                      (hash_password(body.new_password), provider, urow["id"]))
         conn.execute("UPDATE password_resets SET used=1 WHERE token=?", (_hash_token(body.token),))
         # A reset is account recovery — revoke every existing session so a
         # previously-leaked token can't outlive the password change.
         revoke_sessions(conn, urow["id"])
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+class VerifyIn(BaseModel):
+    token: str
+
+
+@app.post("/api/email/verify")
+def email_verify(body: VerifyIn):
+    """Confirm an email address from the link's one-time token."""
+    conn = db()
+    try:
+        conn.execute("DELETE FROM email_verifications WHERE used=1 OR expires_at < ?", (time.time(),))
+        r = conn.execute("SELECT * FROM email_verifications WHERE token=?", (_hash_token(body.token),)).fetchone()
+        if not r or r["used"] or r["expires_at"] < time.time():
+            raise HTTPException(400, "This verification link is invalid or has expired")
+        conn.execute("UPDATE users SET email_verified=1 WHERE id=?", (r["user_id"],))
+        conn.execute("UPDATE email_verifications SET used=1 WHERE token=?", (_hash_token(body.token),))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/email/resend")
+def email_resend(request: Request, user=Depends(current_user)):
+    """Resend the verification email to the signed-in user (rate-limited)."""
+    rate_limit("verify_resend", client_ip(request), 3, 3600)
+    conn = db()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+        if row["email_verified"]:
+            return {"ok": True, "already_verified": True}
+        # Invalidate any pending tokens, then send a fresh one.
+        conn.execute("DELETE FROM email_verifications WHERE user_id=? AND used=0", (user["id"],))
+        send_verification_email(conn, row)
         conn.commit()
         return {"ok": True}
     finally:
