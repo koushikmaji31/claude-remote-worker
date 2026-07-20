@@ -60,5 +60,35 @@ To enable the Google button, add your Google OAuth **Web** client ID to `.env`:
 The frontend fetches it at runtime from `GET /api/config`, so no rebuild is needed — set it and
 restart. When unset, the Google button is hidden and email/password still works. In the Google
 Cloud console, add your origin (e.g. `https://huntjob.space`) to the client's **Authorized
-JavaScript origins**. The access token is verified server-side against Google's userinfo endpoint
-before we mint our own bearer token.
+JavaScript origins**.
+
+### Auth security model
+- **Passwords:** salted PBKDF2-HMAC-SHA256 (240k iterations), constant-time compare.
+- **Sessions, not static tokens:** each sign-in mints a bearer token; the server stores only its
+  SHA-256 hash (`sessions` table), so a DB leak yields no usable credentials. Sessions expire after
+  30 days and are revoked on password change/reset and logout (`POST /api/logout`,
+  `/api/logout-all`). Changing a password keeps the current device signed in and drops the rest;
+  a reset drops **all** sessions.
+- **Google:** the access token is verified against Google's **tokeninfo** endpoint and accepted only
+  when its `aud` equals your `GOOGLE_CLIENT_ID` **and** the email is verified — this blocks tokens
+  minted for a different app. Display name/picture come from userinfo afterward.
+- **No enumeration:** login returns a uniform error and always spends PBKDF2 time (even for unknown
+  emails, via a dummy hash) so timing can't reveal which emails are registered; forgot-password
+  always returns `ok`.
+- **Rate limiting:** login / register / forgot / reset are throttled per IP (and per email) — in-process
+  and fine for a single worker; move to a shared store (Redis) if you scale to multiple workers.
+- **Reset tokens** are stored hashed (SHA-256), single-use, 1-hour expiry; used/expired rows are purged.
+
+### Password-reset email (SMTP)
+Set these in `.env` so reset links are emailed (otherwise the link is only logged server-side):
+
+    PUBLIC_BASE_URL=https://your-domain            # used to build the reset link
+    SMTP_HOST=smtp.your-provider.com
+    SMTP_PORT=587                                  # 465 => implicit SSL, else STARTTLS
+    SMTP_USER=you@your-domain
+    SMTP_PASS=xxxxxxxx
+    SMTP_FROM=no-reply@your-domain                 # defaults to SMTP_USER if unset
+
+### One-time note on upgrade
+Switching to session-based auth invalidates the old per-user static tokens, so everyone who was
+signed in must sign in again once after this deploys.

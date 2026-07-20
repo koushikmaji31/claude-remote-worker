@@ -2,12 +2,14 @@
 import hashlib
 import json
 import os
+import re
 import secrets
 import smtplib
 import sqlite3
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 from email.message import EmailMessage
 from pathlib import Path
@@ -118,11 +120,24 @@ def init_db():
             PRIMARY KEY(conversation_id, user_id)
         );
         -- One-time password-reset tokens (emailed link). Expire after 1 hour.
+        -- 'token' stores the SHA-256 hash of the raw token, never the raw value,
+        -- so a DB leak can't be used to reset accounts.
         CREATE TABLE IF NOT EXISTS password_resets(
             token TEXT PRIMARY KEY,
             user_id INTEGER REFERENCES users(id),
             expires_at REAL NOT NULL,
             used INTEGER NOT NULL DEFAULT 0
+        );
+        -- Bearer sessions. Auth is by session, not by a static per-user token:
+        -- we store only the SHA-256 hash of the issued token, so a DB dump does
+        -- not yield usable credentials. Sessions expire and are revoked on
+        -- password change/reset and logout. A user may hold several (multi-device).
+        CREATE TABLE IF NOT EXISTS sessions(
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL,
+            last_used REAL
         );
         -- GitHub identity: one linked GitHub account per platform user (Phase 1, PAT-based).
         -- token_enc is sealed at rest (see _seal/_unseal). auth_kind future-proofs OAuth/App.
@@ -286,7 +301,12 @@ def init_db():
     for col, ddl in (("password_hash", "password_hash TEXT"),
                      ("auth_provider", "auth_provider TEXT NOT NULL DEFAULT 'legacy'"),
                      ("google_sub", "google_sub TEXT"),
-                     ("picture", "picture TEXT")):
+                     ("picture", "picture TEXT"),
+                     # email_verified: proven ownership of the address. Google
+                     # sign-ups are verified by Google (set to 1); password
+                     # sign-ups start at 0. A confirm-by-email flow (needs SMTP)
+                     # is a planned follow-up; the column lands now so it's ready.
+                     ("email_verified", "email_verified INTEGER NOT NULL DEFAULT 0")):
         if col not in ucols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {ddl}")
     # provider: which git host an identity / repo-link / oauth-handshake belongs to.
@@ -331,19 +351,33 @@ def init_db():
 init_db()
 
 
-def current_user(request: Request) -> sqlite3.Row:
+def _bearer(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise HTTPException(401, "Missing bearer token")
-    token = auth[7:].strip()
+    return auth[7:].strip()
+
+
+def current_user(request: Request) -> sqlite3.Row:
+    token = _bearer(request)
+    th = _hash_token(token)
     conn = db()
     try:
-        row = conn.execute("SELECT * FROM users WHERE token=?", (token,)).fetchone()
+        sess = conn.execute("SELECT * FROM sessions WHERE token_hash=?", (th,)).fetchone()
+        if not sess:
+            raise HTTPException(401, "Invalid token")
+        if sess["expires_at"] < time.time():
+            conn.execute("DELETE FROM sessions WHERE token_hash=?", (th,))
+            conn.commit()
+            raise HTTPException(401, "Session expired")
+        row = conn.execute("SELECT * FROM users WHERE id=?", (sess["user_id"],)).fetchone()
+        if not row:
+            raise HTTPException(401, "Invalid token")
+        conn.execute("UPDATE sessions SET last_used=? WHERE token_hash=?", (time.time(), th))
+        conn.commit()
+        return row
     finally:
         conn.close()
-    if not row:
-        raise HTTPException(401, "Invalid token")
-    return row
 
 
 def require_member(conn, pid: int, user_id: int) -> sqlite3.Row:
@@ -369,6 +403,9 @@ def invite_link(code: str) -> str:
 # with the hash and can be upgraded later without a schema change.
 PBKDF2_ITERATIONS = 240_000
 GOOGLE_USERINFO = "https://www.googleapis.com/oauth2/v3/userinfo"
+GOOGLE_TOKENINFO = "https://oauth2.googleapis.com/tokeninfo"
+SESSION_TTL = 30 * 24 * 3600  # bearer sessions live 30 days, then require re-login
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def hash_password(password: str) -> str:
@@ -390,23 +427,106 @@ def verify_password(password: str, stored: Optional[str]) -> bool:
     return secrets.compare_digest(dk.hex(), hash_hex)
 
 
+# A valid-but-unmatchable hash. Verifying against it for a non-existent account
+# makes a failed login cost the same PBKDF2 time as a real one, so response
+# timing can't be used to tell which emails are registered.
+_DUMMY_HASH = hash_password(secrets.token_hex(16))
+
+
+def normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _hash_token(raw: str) -> str:
+    """Session/reset tokens are high-entropy random values, so a single fast
+    SHA-256 (not PBKDF2) is the right at-rest transform: we store the hash and
+    look up by it, so the raw token never sits in the database."""
+    return hashlib.sha256((raw or "").encode()).hexdigest()
+
+
+def issue_session(conn, user_id: int) -> str:
+    """Create a session and return the RAW bearer token (only its hash is stored)."""
+    raw = secrets.token_urlsafe(32)
+    now = time.time()
+    conn.execute(
+        "INSERT INTO sessions(token_hash, user_id, created_at, expires_at, last_used) VALUES(?,?,?,?,?)",
+        (_hash_token(raw), user_id, now, now + SESSION_TTL, now))
+    return raw
+
+
+def revoke_sessions(conn, user_id: int, keep_hash: Optional[str] = None) -> None:
+    """Delete a user's sessions (all, or all but one) — used on password change/reset."""
+    if keep_hash:
+        conn.execute("DELETE FROM sessions WHERE user_id=? AND token_hash<>?", (user_id, keep_hash))
+    else:
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+
+
+# --- Simple in-process rate limiter (per bucket+key sliding window) -----------
+# In-memory: fine for a single-process deployment. If you scale to multiple
+# workers/hosts, move this to a shared store (Redis) so limits are global.
+_RATE: dict = {}
+_RATE_LOCK = threading.Lock()
+
+
+def client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def rate_limit(bucket: str, key: str, limit: int, window: float) -> None:
+    now = time.time()
+    k = (bucket, key)
+    with _RATE_LOCK:
+        hits = [t for t in _RATE.get(k, []) if now - t < window]
+        if len(hits) >= limit:
+            retry = int(window - (now - hits[0])) + 1
+            raise HTTPException(429, f"Too many attempts. Try again in {retry} seconds.")
+        hits.append(now)
+        _RATE[k] = hits
+
+
 def _verify_google_token(access_token: str) -> dict:
-    """Validate a Google OAuth access token server-side and return the profile.
-    Mirrors the huntjob MCP auth path: hit Google's userinfo endpoint with the
-    token; a valid token yields the verified {sub, email, name, picture}."""
-    req = urllib.request.Request(
-        GOOGLE_USERINFO, headers={"Authorization": f"Bearer {access_token}"}
-    )
+    """Validate a Google OAuth access token server-side and return {sub, email,
+    email_verified, name, picture}.
+
+    Security: the userinfo endpoint alone accepts ANY valid Google token,
+    including one minted for a different app — a replay/confused-deputy risk. So
+    we first hit tokeninfo, which returns the token's audience, and reject it
+    unless `aud` equals OUR client id and the email is verified. Only then do we
+    fetch the display profile (name/picture) from userinfo."""
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    if not client_id:
+        raise HTTPException(400, "Google sign-in is not configured")
+    url = f"{GOOGLE_TOKENINFO}?access_token={urllib.parse.quote(access_token)}"
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return json.load(r)
+        with urllib.request.urlopen(url, timeout=15) as r:
+            ti = json.load(r)
     except Exception:
         raise HTTPException(401, "Could not verify Google sign-in")
+    if ti.get("aud") != client_id:
+        raise HTTPException(401, "Google sign-in was issued for a different app")
+    if str(ti.get("email_verified", "")).lower() != "true":
+        raise HTTPException(401, "Your Google account email is not verified")
+    info = {"sub": ti.get("sub"), "email": ti.get("email"), "email_verified": True}
+    # Best-effort display profile; verification already succeeded above.
+    try:
+        req = urllib.request.Request(
+            GOOGLE_USERINFO, headers={"Authorization": f"Bearer {access_token}"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            prof = json.load(r)
+        info["name"] = prof.get("name")
+        info["picture"] = prof.get("picture")
+    except Exception:
+        pass
+    return info
 
 
-def _auth_payload(row) -> dict:
+def _auth_payload(row, token: str) -> dict:
     return {"user_id": row["id"], "name": row["name"], "email": row["email"],
-            "picture": row["picture"], "token": row["token"]}
+            "picture": row["picture"], "token": token}
 
 
 class RegisterIn(BaseModel):
@@ -432,51 +552,74 @@ def public_config():
 
 
 @app.post("/api/register")
-def register(body: RegisterIn):
+def register(body: RegisterIn, request: Request):
+    rate_limit("register", client_ip(request), 5, 3600)
+    email = normalize_email(body.email)
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "Enter a valid email address")
     if len(body.password or "") < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "Name is required")
     conn = db()
     try:
-        token = secrets.token_hex(16)
+        # Case-insensitive duplicate guard (the UNIQUE index is case-sensitive).
+        if conn.execute("SELECT 1 FROM users WHERE lower(email)=?", (email,)).fetchone():
+            raise HTTPException(409, "Email already registered")
+        # users.token is vestigial (kept NOT NULL UNIQUE for legacy rows); auth
+        # is by session now, so we just fill it with a throwaway random value.
+        legacy = secrets.token_hex(16)
         try:
             cur = conn.execute(
                 "INSERT INTO users(name, email, token, password_hash, auth_provider) "
                 "VALUES(?,?,?,?,'password')",
-                (body.name, body.email, token, hash_password(body.password)),
+                (name, email, legacy, hash_password(body.password)),
             )
             conn.commit()
         except sqlite3.IntegrityError:
             raise HTTPException(409, "Email already registered")
         row = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
-        return _auth_payload(row)
+        token = issue_session(conn, row["id"])
+        conn.commit()
+        return _auth_payload(row, token)
     finally:
         conn.close()
 
 
 @app.post("/api/login")
-def login(body: LoginIn):
+def login(body: LoginIn, request: Request):
+    email = normalize_email(body.email)
+    rate_limit("login", f"{client_ip(request)}|{email}", 10, 900)
     conn = db()
     try:
-        row = conn.execute("SELECT * FROM users WHERE email=?", (body.email,)).fetchone()
+        row = conn.execute("SELECT * FROM users WHERE lower(email)=?", (email,)).fetchone()
+        # Always run a PBKDF2 verify (real hash or the dummy) so response timing
+        # is the same whether or not the email exists — no enumeration via timing.
+        ok = verify_password(body.password, row["password_hash"] if row else _DUMMY_HASH)
         # Uniform error for unknown-email vs bad-password so we don't leak which
         # emails are registered.
-        if not row or not verify_password(body.password, row["password_hash"]):
+        if not row or not ok:
             if row and row["auth_provider"] == "google":
                 raise HTTPException(401, "This account uses Google sign-in")
             raise HTTPException(401, "Invalid email or password")
-        return _auth_payload(row)
+        token = issue_session(conn, row["id"])
+        conn.commit()
+        return _auth_payload(row, token)
     finally:
         conn.close()
 
 
 @app.post("/api/auth/google")
-def auth_google(body: GoogleAuthIn):
-    """Sign in / sign up with Google. Verifies the access token with Google,
-    then upserts the user (matched by google_sub, falling back to email) and
-    returns our own bearer token — reusing the existing token auth model."""
+def auth_google(body: GoogleAuthIn, request: Request):
+    """Sign in / sign up with Google. Verifies the access token with Google
+    (audience + email_verified checked in _verify_google_token), then upserts the
+    user (matched by google_sub, falling back to email) and returns our own
+    session bearer token."""
+    rate_limit("google", client_ip(request), 20, 900)
     info = _verify_google_token(body.access_token)
     sub = info.get("sub")
-    email = info.get("email")
+    email = normalize_email(info.get("email"))
     if not sub or not email:
         raise HTTPException(401, "Google profile missing sub/email")
     name = info.get("name") or email.split("@")[0]
@@ -484,28 +627,33 @@ def auth_google(body: GoogleAuthIn):
     conn = db()
     try:
         row = conn.execute(
-            "SELECT * FROM users WHERE google_sub=? OR email=?", (sub, email)
+            "SELECT * FROM users WHERE google_sub=? OR lower(email)=?", (sub, email)
         ).fetchone()
         if row:
-            # Link Google to an existing account and refresh profile fields.
+            # Link Google to an existing account. Google has proven the person
+            # controls this email, so mark it verified. We only flip a
+            # password-less account's provider to 'google'; an account that also
+            # has a password keeps its provider (usable by both methods).
             conn.execute(
-                "UPDATE users SET google_sub=?, picture=?, auth_provider="
-                "CASE WHEN password_hash IS NULL THEN 'google' ELSE auth_provider END "
+                "UPDATE users SET google_sub=?, picture=COALESCE(?, picture), email_verified=1, "
+                "auth_provider=CASE WHEN password_hash IS NULL THEN 'google' ELSE auth_provider END "
                 "WHERE id=?",
                 (sub, picture, row["id"]),
             )
             conn.commit()
             row = conn.execute("SELECT * FROM users WHERE id=?", (row["id"],)).fetchone()
         else:
-            token = secrets.token_hex(16)
+            legacy = secrets.token_hex(16)
             cur = conn.execute(
-                "INSERT INTO users(name, email, token, auth_provider, google_sub, picture) "
-                "VALUES(?,?,?,'google',?,?)",
-                (name, email, token, sub, picture),
+                "INSERT INTO users(name, email, token, auth_provider, google_sub, picture, email_verified) "
+                "VALUES(?,?,?,'google',?,?,1)",
+                (name, email, legacy, sub, picture),
             )
             conn.commit()
             row = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
-        return _auth_payload(row)
+        token = issue_session(conn, row["id"])
+        conn.commit()
+        return _auth_payload(row, token)
     finally:
         conn.close()
 
@@ -514,7 +662,32 @@ def auth_google(body: GoogleAuthIn):
 def me(user=Depends(current_user)):
     return {"user_id": user["id"], "name": user["name"], "email": user["email"],
             "picture": user["picture"], "auth_provider": user["auth_provider"],
-            "has_password": bool(user["password_hash"])}
+            "has_password": bool(user["password_hash"]),
+            "email_verified": bool(user["email_verified"])}
+
+
+@app.post("/api/logout")
+def logout(request: Request, user=Depends(current_user)):
+    """Revoke the current session (this device)."""
+    conn = db()
+    try:
+        conn.execute("DELETE FROM sessions WHERE token_hash=?", (_hash_token(_bearer(request)),))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@app.post("/api/logout-all")
+def logout_all(user=Depends(current_user)):
+    """Revoke every session for the caller (sign out on all devices)."""
+    conn = db()
+    try:
+        revoke_sessions(conn, user["id"])
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
 
 
 class PasswordSetIn(BaseModel):
@@ -523,10 +696,11 @@ class PasswordSetIn(BaseModel):
 
 
 @app.post("/api/account/password")
-def set_account_password(body: PasswordSetIn, user=Depends(current_user)):
+def set_account_password(body: PasswordSetIn, request: Request, user=Depends(current_user)):
     """Set or change the caller's password. Google-only accounts (no existing
     hash) can set one to enable email+password login alongside Google; accounts
-    that already have a password must confirm the current one."""
+    that already have a password must confirm the current one. Changing the
+    password revokes all OTHER sessions (this device stays signed in)."""
     if len(body.new_password or "") < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
     conn = db()
@@ -538,6 +712,7 @@ def set_account_password(body: PasswordSetIn, user=Depends(current_user)):
         provider = "both" if row["auth_provider"] == "google" else (row["auth_provider"] or "password")
         conn.execute("UPDATE users SET password_hash=?, auth_provider=? WHERE id=?",
                      (hash_password(body.new_password), provider, user["id"]))
+        revoke_sessions(conn, user["id"], keep_hash=_hash_token(_bearer(request)))
         conn.commit()
         return {"ok": True, "auth_provider": provider, "has_password": True}
     finally:
@@ -587,18 +762,23 @@ class ResetIn(BaseModel):
 
 
 @app.post("/api/password/forgot")
-def password_forgot(body: ForgotIn):
+def password_forgot(body: ForgotIn, request: Request):
     """Email a one-time reset link. Always returns ok (no account enumeration)."""
+    email = normalize_email(body.email)
+    rate_limit("forgot", f"{client_ip(request)}|{email}", 5, 3600)
     conn = db()
     try:
-        row = conn.execute("SELECT * FROM users WHERE email=?", (body.email.strip(),)).fetchone()
+        # Housekeeping: drop used/expired reset rows so the table doesn't grow.
+        conn.execute("DELETE FROM password_resets WHERE used=1 OR expires_at < ?", (time.time(),))
+        row = conn.execute("SELECT * FROM users WHERE lower(email)=?", (email,)).fetchone()
         if row:
-            token = secrets.token_urlsafe(32)
+            raw = secrets.token_urlsafe(32)
+            # Store only the hash; the raw token lives only in the emailed link.
             conn.execute("INSERT INTO password_resets(token, user_id, expires_at, used) VALUES(?,?,?,0)",
-                         (token, row["id"], time.time() + 3600))
+                         (_hash_token(raw), row["id"], time.time() + 3600))
             conn.commit()
             base = (os.environ.get("PUBLIC_BASE_URL", "").strip() or "http://127.0.0.1:8900").rstrip("/")
-            link = f"{base}/?reset={token}"
+            link = f"{base}/?reset={raw}"
             sent = _send_email(
                 row["email"], "Reset your Team Collab password",
                 f"Hi {row['name']},\n\nUse this link to reset your password (valid for 1 hour):\n{link}\n\n"
@@ -613,12 +793,13 @@ def password_forgot(body: ForgotIn):
 
 
 @app.post("/api/password/reset")
-def password_reset(body: ResetIn):
+def password_reset(body: ResetIn, request: Request):
+    rate_limit("reset", client_ip(request), 10, 900)
     if len(body.new_password or "") < 8:
         raise HTTPException(400, "Password must be at least 8 characters")
     conn = db()
     try:
-        r = conn.execute("SELECT * FROM password_resets WHERE token=?", (body.token,)).fetchone()
+        r = conn.execute("SELECT * FROM password_resets WHERE token=?", (_hash_token(body.token),)).fetchone()
         if not r or r["used"] or r["expires_at"] < time.time():
             raise HTTPException(400, "This reset link is invalid or has expired")
         urow = conn.execute("SELECT * FROM users WHERE id=?", (r["user_id"],)).fetchone()
@@ -627,7 +808,10 @@ def password_reset(body: ResetIn):
         provider = "both" if urow["auth_provider"] == "google" else (urow["auth_provider"] or "password")
         conn.execute("UPDATE users SET password_hash=?, auth_provider=? WHERE id=?",
                      (hash_password(body.new_password), provider, urow["id"]))
-        conn.execute("UPDATE password_resets SET used=1 WHERE token=?", (body.token,))
+        conn.execute("UPDATE password_resets SET used=1 WHERE token=?", (_hash_token(body.token),))
+        # A reset is account recovery — revoke every existing session so a
+        # previously-leaked token can't outlive the password change.
+        revoke_sessions(conn, urow["id"])
         conn.commit()
         return {"ok": True}
     finally:
